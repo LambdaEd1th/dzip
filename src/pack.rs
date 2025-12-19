@@ -1,30 +1,35 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use byteorder::{LittleEndian, WriteBytesExt};
 use log::info;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
+use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::rc::Rc; // [Optimization]
+use std::sync::Arc;
 
 use crate::compression::CodecRegistry;
-use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, MAGIC};
+use crate::constants::{CHUNK_LIST_TERMINATOR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC};
 use crate::error::DzipError;
 use crate::types::{ChunkDef, Config};
-use crate::utils::encode_flags; // [Added]
+use crate::utils::encode_flags;
 
 pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
-    let toml_content = fs::read_to_string(config_path)?;
-    let config: Config = toml::from_str(&toml_content)?;
+    let toml_content = fs::read_to_string(config_path)
+        .context(format!("Failed to read config file: {:?}", config_path))?;
+    let config: Config =
+        toml::from_str(&toml_content).context("Failed to parse TOML configuration")?;
 
     let base_dir = config_path
         .file_stem()
         .ok_or_else(|| anyhow!("Invalid config filename"))?
         .to_string_lossy()
         .to_string();
+
     let base_path = config_path
         .parent()
-        .ok_or_else(|| anyhow!("Cannot determine parent directory"))?
+        .ok_or_else(|| anyhow!("Cannot determine parent directory of config file"))?
         .join(&base_dir);
 
     info!("Packing from directory: {:?}", base_path);
@@ -41,7 +46,8 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
 
     // 1. Index Source Files
     info!("Indexing source files...");
-    let mut chunk_source_map: HashMap<u16, (Rc<PathBuf>, u64, usize)> = HashMap::new();
+    // [Modified] Use Arc<PathBuf> for thread safety in parallel processing
+    let mut chunk_source_map: HashMap<u16, (Arc<PathBuf>, u64, usize)> = HashMap::new();
 
     for f_entry in &config.files {
         let mut clean_rel_path = PathBuf::new();
@@ -58,13 +64,12 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
         let full_path = base_path.join(clean_rel_path);
 
         if !full_path.exists() {
-            // [Error] Specific Config error
             return Err(
                 DzipError::Config(format!("Source file not found: {:?}", full_path)).into(),
             );
         }
 
-        let full_path_rc = Rc::new(full_path);
+        let full_path_arc = Arc::new(full_path);
         let mut current_offset: u64 = 0;
         for cid in &f_entry.chunks {
             let c_def = chunk_map_def.get(cid).ok_or_else(|| {
@@ -78,7 +83,7 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
                 c_def.size_decompressed
             } as usize;
 
-            chunk_source_map.insert(*cid, (full_path_rc.clone(), current_offset, read_len));
+            chunk_source_map.insert(*cid, (full_path_arc.clone(), current_offset, read_len));
             current_offset += read_len as u64;
         }
     }
@@ -96,14 +101,12 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     if !unique_dirs.contains(".") {
         unique_dirs.insert(".".to_string());
     }
-
     let mut sorted_dirs: Vec<String> = unique_dirs.into_iter().collect();
     sorted_dirs.sort();
     if let Some(pos) = sorted_dirs.iter().position(|x| x == ".") {
         sorted_dirs.remove(pos);
     }
     sorted_dirs.insert(0, ".".to_string());
-
     let dir_map: HashMap<String, usize> = sorted_dirs
         .iter()
         .enumerate()
@@ -138,7 +141,6 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
         }
         header_buffer.write_u16::<LittleEndian>(CHUNK_LIST_TERMINATOR)?;
     }
-
     header_buffer.write_u16::<LittleEndian>((1 + config.archive_files.len()) as u16)?;
     header_buffer.write_u16::<LittleEndian>(config.chunks.len() as u16)?;
 
@@ -148,7 +150,6 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
             header_buffer.write_u8(0)?;
         }
     }
-
     if !config.archive_files.is_empty() {
         for fname in &config.archive_files {
             header_buffer.write_all(fname.as_bytes())?;
@@ -178,63 +179,130 @@ pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
     let out_filename_0 = format!("{}_packed.dz", base_dir);
     let mut current_offset_0 = header_buffer.position() as u32;
     let f0 = File::create(&out_filename_0)?;
-    let mut writer0 = BufWriter::new(f0);
+
+    let mut writer0 = BufWriter::with_capacity(DEFAULT_BUFFER_SIZE, f0);
     writer0.write_all(header_buffer.get_ref())?;
 
     let mut split_writers: HashMap<u16, BufWriter<File>> = HashMap::new();
     let mut split_offsets: HashMap<u16, u32> = HashMap::new();
+
+    // [Safety] Replace unwrap() with ok_or_else to prevent panic
+    let config_parent = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("Config path has no parent"))?;
+
     for (i, fname) in config.archive_files.iter().enumerate() {
         let idx = (i + 1) as u16;
-        let path = config_path.parent().unwrap().join(fname);
+        let path = config_parent.join(fname);
         let f = File::create(&path)?;
-        split_writers.insert(idx, BufWriter::new(f));
+
+        split_writers.insert(idx, BufWriter::with_capacity(DEFAULT_BUFFER_SIZE, f));
         split_offsets.insert(idx, 0);
     }
 
-    // 4. Stream Data
+    // 4. Stream Data (Parallelized & Buffered)
     let mut sorted_chunks_def = config.chunks.clone();
     sorted_chunks_def.sort_by_key(|c| c.id);
 
-    for c_def in &mut sorted_chunks_def {
-        let (source_path, src_offset, read_len) = chunk_source_map
-            .get(&c_def.id)
-            .ok_or_else(|| anyhow!("Source map missing for chunk ID: {}", c_def.id))?;
+    info!(
+        "Compressing {} chunks (Parallel)...",
+        sorted_chunks_def.len()
+    );
 
-        // [Fix] Dereference Rc via as_path()
-        let mut f_in = File::open(source_path.as_path())?;
-        f_in.seek(SeekFrom::Start(*src_offset))?;
-        let mut chunk_reader = f_in.take(*read_len as u64);
+    struct CompressionJob {
+        chunk_idx: usize,
+        source_path: Arc<PathBuf>,
+        offset: u64,
+        read_len: usize,
+        flags: Vec<std::borrow::Cow<'static, str>>,
+    }
 
-        let flags_int = encode_flags(&c_def.flags);
+    let jobs: Vec<CompressionJob> = sorted_chunks_def
+        .iter()
+        .enumerate()
+        .map(|(i, c_def)| {
+            let (source_path, src_offset, read_len) = chunk_source_map
+                .get(&c_def.id)
+                .expect("Source map missing for chunk");
+
+            CompressionJob {
+                chunk_idx: i,
+                source_path: source_path.clone(),
+                offset: *src_offset,
+                read_len: *read_len,
+                flags: c_def.flags.clone(),
+            }
+        })
+        .collect();
+
+    let compressed_results: Result<Vec<_>> = jobs
+        .par_iter()
+        .map(|job| -> Result<(usize, Vec<u8>)> {
+            let mut f_in = File::open(job.source_path.as_ref())?;
+            f_in.seek(SeekFrom::Start(job.offset))?;
+
+            // [Critical Optimization] Add BufReader to avoid syscall overhead on small reads
+            let buffered_reader = BufReader::with_capacity(DEFAULT_BUFFER_SIZE, f_in);
+            let mut chunk_reader = buffered_reader.take(job.read_len as u64);
+
+            let mut compressed_buffer = Vec::new();
+            let flags_int = encode_flags(&job.flags);
+
+            registry.compress(&mut chunk_reader, &mut compressed_buffer, flags_int)?;
+            Ok((job.chunk_idx, compressed_buffer))
+        })
+        .collect();
+
+    let compressed_chunks = compressed_results?;
+
+    // [Sequential Write] - Eliminate Panics here
+    for (idx, data) in compressed_chunks {
+        let c_def = &mut sorted_chunks_def[idx];
+
         let target_writer = if c_def.archive_file_index == 0 {
             &mut writer0
         } else {
+            // [Safety] Replace unwrap() with a descriptive error
             split_writers
                 .get_mut(&c_def.archive_file_index)
                 .ok_or_else(|| {
                     DzipError::Config(format!(
-                        "Split writer {} not initialized",
+                        "Chunk {} refers to non-existent archive_file_index: {}",
+                        c_def.id, c_def.archive_file_index
+                    ))
+                })?
+        };
+
+        let current_pos = if c_def.archive_file_index == 0 {
+            current_offset_0
+        } else {
+            *split_offsets
+                .get(&c_def.archive_file_index)
+                .ok_or_else(|| {
+                    DzipError::Config(format!(
+                        "Missing offset tracking for archive_file_index: {}",
                         c_def.archive_file_index
                     ))
                 })?
         };
 
-        let start_pos = target_writer.stream_position()?;
-        registry.compress(&mut chunk_reader, target_writer, flags_int)?;
-        target_writer.flush()?;
-        let end_pos = target_writer.stream_position()?;
-        let comp_len = (end_pos - start_pos) as u32;
+        target_writer.write_all(&data)?;
 
-        c_def.offset = if c_def.archive_file_index == 0 {
-            current_offset_0
-        } else {
-            *split_offsets.get(&c_def.archive_file_index).unwrap()
-        };
-        c_def.size_compressed = comp_len;
+        c_def.offset = current_pos;
+        c_def.size_compressed = data.len() as u32;
+
         if c_def.archive_file_index == 0 {
-            current_offset_0 += comp_len;
+            current_offset_0 += c_def.size_compressed;
         } else {
-            *split_offsets.get_mut(&c_def.archive_file_index).unwrap() += comp_len;
+            let offset_ref = split_offsets
+                .get_mut(&c_def.archive_file_index)
+                .ok_or_else(|| {
+                    DzipError::Config(format!(
+                        "Missing offset tracking for archive_file_index: {}",
+                        c_def.archive_file_index
+                    ))
+                })?;
+            *offset_ref += c_def.size_compressed;
         }
     }
 

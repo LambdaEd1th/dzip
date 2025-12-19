@@ -1,5 +1,5 @@
-use crate::constants::ChunkFlags;
-use crate::error::DzipError; // [Added]
+use crate::constants::{ChunkFlags, DEFAULT_BUFFER_SIZE};
+use crate::error::DzipError;
 use anyhow::{Context, Result};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -87,7 +87,8 @@ impl CodecRegistry {
 struct ZeroDecompressor;
 impl Decompressor for ZeroDecompressor {
     fn decompress(&self, _input: &mut dyn Read, output: &mut dyn Write, len: u32) -> Result<()> {
-        let chunk_size = 4096;
+        // [Modified] Use global DEFAULT_BUFFER_SIZE instead of hardcoded 4096
+        let chunk_size = DEFAULT_BUFFER_SIZE;
         let zeros = vec![0u8; chunk_size];
         let mut remaining = len as usize;
         while remaining > 0 {
@@ -102,7 +103,6 @@ impl Decompressor for ZeroDecompressor {
 struct LzmaDecompressor;
 impl Decompressor for LzmaDecompressor {
     fn decompress(&self, input: &mut dyn Read, output: &mut dyn Write, _len: u32) -> Result<()> {
-        // [Error] Map to DzipError::Decompression
         let mut lzma_reader = lzma_rust2::LzmaReader::new_mem_limit(input, u32::MAX, None)
             .map_err(|e| DzipError::Decompression(format!("LZMA init: {}", e)))?;
         io::copy(&mut lzma_reader, output)

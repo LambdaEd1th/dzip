@@ -1,6 +1,6 @@
 [package]
 name = "dzip-cli"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Ed1th"]
 description = "A CLI tool to unpack and pack Marmalade SDK .dz archives."
 edition = "2024"
@@ -19,6 +19,7 @@ toml = "0.9.8"
 log = "0.4"
 env_logger = "0.11"
 bitflags = "2.10.0"
+rayon = "1.11.0"
 
 [profile.release]
 strip = true

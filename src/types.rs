@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow; // [Optimization] Import Cow for zero-copy string handling
+use std::borrow::Cow;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
@@ -47,7 +47,6 @@ pub struct ChunkDef {
     pub offset: u32,
     pub size_compressed: u32,
     pub size_decompressed: u32,
-    // [Optimization] Changed Vec<String> to Vec<Cow<'static, str>>.
     // This allows using static string slices (Cow::Borrowed) for standard flags
     // avoiding heap allocation for every chunk's flag list.
     pub flags: Vec<Cow<'static, str>>,

@@ -3,6 +3,8 @@ use bitflags::bitflags;
 pub const MAGIC: u32 = 0x5A525444; // 'DTRZ' in Little Endian
 pub const CHUNK_LIST_TERMINATOR: u16 = 0xFFFF;
 
+pub const DEFAULT_BUFFER_SIZE: usize = 128 * 1024;
+
 // [Refactor] Use bitflags! macro for type-safe flag handling
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
