@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use log::LevelFilter;
 use std::path::PathBuf;
 
 use dzip_cli::{create_default_registry, do_pack, do_unpack};
@@ -6,6 +7,11 @@ use dzip_cli::{create_default_registry, do_pack, do_unpack};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Enable verbose logging (Debug level) for troubleshooting.
+    /// This is a global argument usable with any subcommand.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -33,13 +39,30 @@ enum Commands {
 }
 
 fn main() {
-    // Initialize the logger based on the RUST_LOG environment variable
-    env_logger::init();
-
+    // 1. Parse CLI arguments first to check for the --verbose flag
     let cli = Cli::parse();
+
+    // 2. Initialize the logger builder
+    let mut builder = env_logger::Builder::from_default_env();
+
+    // Set the default log level to 'Info' if RUST_LOG environment variable is not set.
+    // This ensures users see standard output messages by default.
+    if std::env::var("RUST_LOG").is_err() {
+        builder.filter(None, LevelFilter::Info);
+    }
+
+    // If --verbose is passed, force the log level to 'Debug'.
+    // This will show detailed logs from the application and dependencies.
+    if cli.verbose {
+        builder.filter(None, LevelFilter::Debug);
+    }
+
+    builder.init();
+
+    // 3. Create the codec registry
     let registry = create_default_registry();
 
-    // Execute the command and capture the result
+    // 4. Execute the command logic
     let result = match &cli.command {
         Commands::Unpack {
             input,
@@ -49,10 +72,10 @@ fn main() {
         Commands::Pack { config } => do_pack(config, &registry),
     };
 
-    // Handle errors gracefully without returning Result<()> which might print ugly stack traces
+    // 5. Handle errors gracefully (Optimized Error Reporting)
     if let Err(e) = result {
-        // Print the error in red (ANSI escape code \x1b[31m)
-        // {:#} prints the alternative formatting for anyhow errors (the cause chain)
+        // Print errors in red using ANSI escape codes for better visibility
+        // {:#} prints the alternate view (causal chain) of the error
         eprintln!("\x1b[31mError:\x1b[0m {:#}", e);
         std::process::exit(1);
     }
