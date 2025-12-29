@@ -38,4 +38,13 @@ pub enum DzipError {
 
     #[error("General error: {0}")]
     Generic(String),
+
+    #[error("Internal logic error: {0}")]
+    InternalLogic(String),
+
+    #[error("Chunk ID {0} undefined in configuration")]
+    ChunkDefinitionMissing(u16),
+
+    #[error("UI initialization error: {0}")]
+    UiError(String),
 }

@@ -45,6 +45,7 @@ struct CompressionJob {
 // --- Main Entry Point ---
 
 pub fn do_pack(config_path: &PathBuf, registry: &CodecRegistry) -> Result<()> {
+    // Add context to file reading errors
     let toml_content = fs::read_to_string(config_path).map_err(|e| {
         DzipError::IoContext(format!("Failed to read config file {:?}", config_path), e)
     })?;
@@ -117,19 +118,18 @@ fn index_source_files(
         let full_path = resource_root.join(normalized_rel);
 
         if !full_path.exists() {
-            return Err(DzipError::Config(format!(
-                "Source file not found: {:?}",
-                full_path
-            )));
+            return Err(
+                DzipError::Config(format!("Source file not found: {:?}", full_path)),
+            );
         }
 
         let full_path_arc = Arc::new(full_path);
         let mut current_offset: u64 = 0;
 
         for cid in &f_entry.chunks {
-            let c_def = chunk_map_def.get(cid).ok_or_else(|| {
-                DzipError::Config(format!("Chunk ID {} undefined in [chunks]", cid))
-            })?;
+            let c_def = chunk_map_def
+                .get(cid)
+                .ok_or(DzipError::ChunkDefinitionMissing(*cid))?;
 
             let flags = ChunkFlags::from_bits_truncate(encode_flags(&c_def.flags));
             let read_len = if flags.contains(ChunkFlags::DZ_RANGE) {
@@ -287,14 +287,16 @@ fn run_compression_pipeline(
     info!("Compressing {} chunks ...", sorted_chunks_def.len());
 
     let pb = ProgressBar::new(sorted_chunks_def.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .expect("Failed to set progress bar template") // [Fixed]: Replaced unwrap() with expect()
-            .progress_chars("#>-"),
-    );
+
+    let style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to set progress bar template: {}", e);
+            ProgressStyle::default_bar()
+        })
+        .progress_chars("#>-");
+
+    pb.set_style(style);
 
     let jobs: Result<Vec<CompressionJob>> = sorted_chunks_def
         .iter()
@@ -383,8 +385,12 @@ fn run_compression_pipeline(
             } else {
                 *split_offsets_owned
                     .get_mut(&c_def.archive_file_index)
-                    .expect("Logic error: Split offset missing for valid archive index") // [Fixed]: Replaced unwrap() with expect()
-                    += c_def.size_compressed;
+                    .ok_or_else(|| {
+                        DzipError::InternalLogic(format!(
+                            "Split offset missing for archive index {}",
+                            c_def.archive_file_index
+                        ))
+                    })? += c_def.size_compressed;
             }
             next_idx += 1;
 
@@ -403,7 +409,14 @@ fn run_compression_pipeline(
     // Producer (Parallel)
     jobs.par_iter().for_each_with(tx, |s, job| {
         let res = (|| -> Result<Vec<u8>> {
-            let mut f_in = File::open(job.source_path.as_ref())?;
+            // [Optimization]: Added IoContext map_err for better debugging
+            let mut f_in = File::open(job.source_path.as_ref()).map_err(|e| {
+                DzipError::IoContext(
+                    format!("Failed to read source chunk file {:?}", job.source_path),
+                    e,
+                )
+            })?;
+
             f_in.seek(SeekFrom::Start(job.offset))?;
             let mut chunk_reader =
                 BufReader::with_capacity(DEFAULT_BUFFER_SIZE, f_in).take(job.read_len as u64);

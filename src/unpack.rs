@@ -68,7 +68,6 @@ pub fn do_unpack(
         .map_err(|e| DzipError::IoContext(format!("Creating out dir {:?}", root_out), e))?;
 
     extract_files(&ctx, &root_out, input_path, keep_raw, registry)?;
-    // [Modified]: Removed unused 'root_out' parameter from call
     save_config(&ctx, &base_name)?;
 
     Ok(())
@@ -270,14 +269,16 @@ fn extract_files(
         .collect();
 
     let pb = ProgressBar::new(ctx.map_entries.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .expect("Failed to set progress bar template")
-            .progress_chars("#>-"),
-    );
+
+    let style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to set progress bar template: {}", e);
+            ProgressStyle::default_bar()
+        })
+        .progress_chars("#>-");
+
+    pb.set_style(style);
 
     ctx.map_entries.par_iter().try_for_each_init(
         HashMap::new,
@@ -311,7 +312,10 @@ fn extract_files(
                         std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                         std::collections::hash_map::Entry::Vacant(e) => {
                             let f = if chunk.file_idx == 0 {
-                                File::open(input_path)?
+                                File::open(input_path).map_err(|e| DzipError::IoContext(
+                                    format!("Failed to open main archive {:?}", input_path), 
+                                    e
+                                ))?
                             } else {
                                 let split_idx = (chunk.file_idx - 1) as usize;
                                 let split_name =
@@ -326,7 +330,10 @@ fn extract_files(
                                     if e.kind() == std::io::ErrorKind::NotFound {
                                         DzipError::SplitFileMissing(split_path.clone())
                                     } else {
-                                        DzipError::Io(e)
+                                        DzipError::IoContext(
+                                            format!("Failed to open split file {:?}", split_path), 
+                                            e
+                                        )
                                     }
                                 })?
                             };

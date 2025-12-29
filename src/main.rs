@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -33,23 +32,28 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
+    // Initialize the logger based on the RUST_LOG environment variable
     env_logger::init();
+
     let cli = Cli::parse();
     let registry = create_default_registry();
 
-    match &cli.command {
+    // Execute the command and capture the result
+    let result = match &cli.command {
         Commands::Unpack {
             input,
             output,
             keep_raw,
-        } => {
-            do_unpack(input, output.clone(), *keep_raw, &registry)?;
-        }
-        Commands::Pack { config } => {
-            do_pack(config, &registry)?;
-        }
-    }
+        } => do_unpack(input, output.clone(), *keep_raw, &registry),
+        Commands::Pack { config } => do_pack(config, &registry),
+    };
 
-    Ok(())
+    // Handle errors gracefully without returning Result<()> which might print ugly stack traces
+    if let Err(e) = result {
+        // Print the error in red (ANSI escape code \x1b[31m)
+        // {:#} prints the alternative formatting for anyhow errors (the cause chain)
+        eprintln!("\x1b[31mError:\x1b[0m {:#}", e);
+        std::process::exit(1);
+    }
 }
