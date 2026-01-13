@@ -6,7 +6,7 @@ pub mod types;
 pub mod unpack;
 pub mod utils;
 
-pub use compression::{create_default_registry, CodecRegistry};
+pub use compression::{CodecRegistry, create_default_registry};
 pub use error::DzipError;
 pub use pack::do_pack;
 pub use unpack::do_unpack;

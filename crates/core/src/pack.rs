@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use crate::compression::CodecRegistry;
 use crate::constants::{
-    ChunkFlags, CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, DEFAULT_BUFFER_SIZE, MAGIC,
+    CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,
 };
 use crate::error::DzipError;
 use crate::types::{ChunkDef, Config};

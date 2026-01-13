@@ -3,11 +3,11 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
+use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 
 use crate::compression::CodecRegistry;
 use crate::constants::{
-    ChunkFlags, CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, DEFAULT_BUFFER_SIZE, MAGIC,
+    CHUNK_LIST_TERMINATOR, CURRENT_DIR_STR, ChunkFlags, DEFAULT_BUFFER_SIZE, MAGIC,
 };
 use crate::error::DzipError;
 use crate::types::{ArchiveMeta, ChunkDef, Config, FileEntry, RangeSettings};

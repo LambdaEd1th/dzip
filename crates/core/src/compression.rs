@@ -1,6 +1,6 @@
+use crate::Result;
 use crate::constants::ChunkFlags;
 use crate::error::DzipError;
-use crate::Result;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
