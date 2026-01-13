@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, warn, LevelFilter};
+use log::{LevelFilter, info, warn};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // Import core types and the Observer trait
-use dzip_core::{create_default_registry, do_pack, do_unpack, DzipObserver};
+use dzip_core::{DzipObserver, create_default_registry, do_pack, do_unpack};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
