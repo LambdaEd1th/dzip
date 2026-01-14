@@ -1,50 +1,43 @@
-use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DzipError {
-    #[error("IO error: {0}")]
+    #[error("IO Error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("IO error at '{0}': {1}")]
+    #[error("IO Error in context '{0}': {1}")]
     IoContext(String, #[source] std::io::Error),
 
-    #[error("TOML parsing error: {0}")]
-    TomlDe(#[from] toml::de::Error),
-
-    #[error("TOML serialization error: {0}")]
-    TomlSer(#[from] toml::ser::Error),
-
-    #[error("Invalid magic bytes: expected 0x{0:08x}")]
+    #[error("Invalid Magic Header: expected DZIP, found {0:#x}")]
     InvalidMagic(u32),
 
-    #[error("Security error: {0}")]
-    Security(String),
+    #[error("Compression Error: {0}")]
+    Compression(String),
 
-    #[error("Configuration error: {0}")]
-    Config(String),
-
-    #[error("Decompression error: {0}")]
+    #[error("Decompression Error: {0}")]
     Decompression(String),
 
-    #[error("Split archive file missing: {0}")]
-    SplitFileMissing(PathBuf),
+    #[error("Configuration Error: {0}")]
+    Config(String),
 
-    #[error("Thread execution failed: {0}")]
-    ThreadPanic(String),
+    #[error("TOML Serialization Error: {0}")]
+    TomlSer(#[from] toml::ser::Error),
 
-    #[error("Unsupported feature: {0}")]
-    Unsupported(String),
+    #[error("TOML Deserialization Error: {0}")]
+    TomlDe(#[from] toml::de::Error),
 
-    #[error("General error: {0}")]
-    Generic(String),
-
-    #[error("Internal logic error: {0}")]
-    InternalLogic(String),
-
-    #[error("Chunk ID {0} undefined in configuration")]
+    #[error("Chunk Definition Missing for ID {0}")]
     ChunkDefinitionMissing(u16),
 
-    #[error("UI initialization error: {0}")]
-    UiError(String),
+    #[error("Split file missing or invalid: {0:?}")]
+    SplitFileMissing(std::path::PathBuf),
+
+    #[error("Generic Error: {0}")]
+    Generic(String),
+
+    #[error("Thread Panic: {0}")]
+    ThreadPanic(String),
+
+    #[error("Internal Logic Error: {0}")]
+    InternalLogic(String),
 }

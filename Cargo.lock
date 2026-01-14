@@ -255,6 +255,8 @@ dependencies = [
  "env_logger",
  "indicatif",
  "log",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -265,6 +267,7 @@ dependencies = [
  "byteorder",
  "bzip2",
  "flate2",
+ "log",
  "lzma-rust2",
  "rayon",
  "serde",

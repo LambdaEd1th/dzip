@@ -10,6 +10,10 @@ authors = ["Ed1th"]
 readme = "README.md"
 license = "GPL-3.0-or-later"
 
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+log = "0.4.20"
+
 # --- Release Profile Settings ---
 # These settings apply to the entire workspace when running with --release
 [profile.release]

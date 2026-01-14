@@ -1,60 +1,59 @@
 use crate::Result;
-use crate::error::DzipError;
 use std::io::{Read, Seek, Write};
-use std::path::Path;
 
-/// Trait alias for objects that are Read + Seek + Send.
+// --- Stream Trait Aliases ---
+
+/// A stream that can Read, Seek, and be sent across threads (required for Rayon).
 pub trait ReadSeekSend: Read + Seek + Send {}
 impl<T: Read + Seek + Send> ReadSeekSend for T {}
 
-/// Trait alias for objects that are Write + Seek + Send.
+/// A stream that can Write, Seek, and be sent across threads.
 pub trait WriteSeekSend: Write + Seek + Send {}
 impl<T: Write + Seek + Send> WriteSeekSend for T {}
 
-/// Abstract File System Interface.
-pub trait DzipFileSystem: Send + Sync {
-    fn open_read(&self, path: &Path) -> Result<Box<dyn ReadSeekSend>>;
+/// A stream that can Write and be sent across threads (Seek not required).
+pub trait WriteSend: Write + Send {}
+impl<T: Write + Send> WriteSend for T {}
 
-    fn create_file(&self, path: &Path) -> Result<Box<dyn WriteSeekSend>>;
+// --- Unpack Interfaces ---
 
-    fn create_dir_all(&self, path: &Path) -> Result<()>;
+/// Abstraction for the source of archive data (The .dz file and its splits).
+pub trait UnpackSource: Send + Sync {
+    /// Open the main archive file for reading.
+    fn open_main(&self) -> Result<Box<dyn ReadSeekSend>>;
 
-    fn file_len(&self, path: &Path) -> Result<u64>;
+    /// Open a split file (e.g., .d01) for reading.
+    fn open_split(&self, split_name: &str) -> Result<Box<dyn ReadSeekSend>>;
 
-    fn exists(&self, path: &Path) -> bool;
+    /// Get the size of a split file (needed for chunk size correction).
+    fn get_split_len(&self, split_name: &str) -> Result<u64>;
 }
 
-/// ---------------------------------------------------------
-/// Default Implementation: Standard File System (std::fs)
-/// ---------------------------------------------------------
-pub struct StdFileSystem;
+/// Abstraction for the destination of extracted files.
+pub trait UnpackSink: Send + Sync {
+    /// Create a directory (and parents) given a logical relative path.
+    fn create_dir_all(&self, rel_path: &str) -> Result<()>;
 
-impl DzipFileSystem for StdFileSystem {
-    fn open_read(&self, path: &Path) -> Result<Box<dyn ReadSeekSend>> {
-        let f = std::fs::File::open(path)
-            .map_err(|e| DzipError::IoContext(format!("Opening {:?}", path), e))?;
-        Ok(Box::new(f))
-    }
+    /// Create a file for writing given a logical relative path.
+    fn create_file(&self, rel_path: &str) -> Result<Box<dyn WriteSend>>;
+}
 
-    fn create_file(&self, path: &Path) -> Result<Box<dyn WriteSeekSend>> {
-        let f = std::fs::File::create(path)
-            .map_err(|e| DzipError::IoContext(format!("Creating {:?}", path), e))?;
-        Ok(Box::new(f))
-    }
+// --- Pack Interfaces ---
 
-    fn create_dir_all(&self, path: &Path) -> Result<()> {
-        std::fs::create_dir_all(path)
-            .map_err(|e| DzipError::IoContext(format!("Creating dir {:?}", path), e))?;
-        Ok(())
-    }
+/// Abstraction for the source of raw files to be packed.
+pub trait PackSource: Send + Sync {
+    /// Check if a file exists given its logical relative path.
+    fn exists(&self, rel_path: &str) -> bool;
 
-    fn file_len(&self, path: &Path) -> Result<u64> {
-        let meta = std::fs::metadata(path)
-            .map_err(|e| DzipError::IoContext(format!("Stat {:?}", path), e))?;
-        Ok(meta.len())
-    }
+    /// Open a source file for reading.
+    fn open_file(&self, rel_path: &str) -> Result<Box<dyn ReadSeekSend>>;
+}
 
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
-    }
+/// Abstraction for the destination of the created archive.
+pub trait PackSink: Send + Sync {
+    /// Create the main .dz file for writing.
+    fn create_main(&mut self) -> Result<Box<dyn WriteSeekSend>>;
+
+    /// Create a split file (e.g., .d01) for writing.
+    fn create_split(&mut self, split_idx: u16) -> Result<Box<dyn WriteSeekSend>>;
 }
