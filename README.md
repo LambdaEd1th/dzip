@@ -91,7 +91,7 @@ Please ensure your code passes `cargo clippy` and `cargo fmt` before submitting.
 ## 📄 License
 
 This project is licensed under the **GNU General Public License v3.0**.
-See the [LICENSE](https://github.com/LambdaEd1th/dzip-rs/LICENSE) file for details.
+See the [LICENSE](https://github.com/LambdaEd1th/dzip-rs/blob/master/LICENSE) file for details.
 
 ---
 
