@@ -10,8 +10,8 @@ The project is divided into two main crates:
 
 | Crate | Path | Description |
 | --- | --- | --- |
-| **dzip-core** | [`crates/core`](https://www.google.com/search?q=crates/core) | The backend library. It handles the binary format parsing, compression algorithms (LZMA, ZLIB, etc.), and parallel processing pipeline. It is I/O agnostic and can be embedded in other applications. |
-| **dzip-cli** | [`crates/cli`](https://www.google.com/search?q=crates/cli) | The terminal frontend. A command-line tool that exposes the core functionality to end-users for unpacking, packing, and listing archive contents. |
+| **dzip-core** | [`crates/core`](https://github.com/LambdaEd1th/dzip-rs/tree/master/crates/core) | The backend library. It handles the binary format parsing, compression algorithms (LZMA, ZLIB, etc.), and parallel processing pipeline. It is I/O agnostic and can be embedded in other applications. |
+| **dzip-cli** | [`crates/cli`](https://github.com/LambdaEd1th/dzip-rs/tree/master/crates/cli) | The terminal frontend. A command-line tool that exposes the core functionality to end-users for unpacking, packing, and listing archive contents. |
 
 ## ✨ Key Features
 
@@ -38,7 +38,7 @@ To build both the library and the CLI tool from the root directory:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/dzip-rs.git
+git clone https://github.com/LambdaEd1th/dzip-rs.git
 cd dzip-rs
 
 # Build all crates in release mode
@@ -62,7 +62,7 @@ cargo test --workspace
 
 ## 📖 Usage Examples
 
-Since most users interact with the project via the CLI, here are quick examples. For detailed documentation, please refer to the [CLI README](https://www.google.com/search?q=crates/cli/README.md).
+Since most users interact with the project via the CLI, here are quick examples. For detailed documentation, please refer to the [CLI README](https://github.com/LambdaEd1th/dzip-rs/tree/master/crates/cli/README.md).
 
 ```bash
 # Unpack an archive
@@ -91,7 +91,7 @@ Please ensure your code passes `cargo clippy` and `cargo fmt` before submitting.
 ## 📄 License
 
 This project is licensed under the **GNU General Public License v3.0**.
-See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
+See the [LICENSE](https://github.com/LambdaEd1th/dzip-rs/LICENSE) file for details.
 
 ---
 
