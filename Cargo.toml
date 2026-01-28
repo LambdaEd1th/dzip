@@ -2,6 +2,11 @@
 members = ["core", "cli"]
 resolver = "2"
 
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+repository = "https://github.com/LambdaEd1th/dzip-rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
