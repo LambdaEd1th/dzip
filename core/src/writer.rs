@@ -140,8 +140,19 @@ pub fn compress_data(data: &[u8], method: CompressionMethod) -> Result<(u16, Vec
         CompressionMethod::Lzma => {
             // lzma-rs
             let mut output = Vec::new();
-            lzma_rs::lzma_compress(&mut std::io::Cursor::new(data), &mut output)
+            {
+                let options = lzma_rust2::LzmaOptions::with_preset(6);
+                let mut writer = lzma_rust2::LzmaWriter::new_use_header(
+                    &mut output,
+                    &options,
+                    Some(data.len() as u64),
+                )
                 .map_err(|e| DzipError::Io(std::io::Error::other(e)))?;
+                writer.write_all(data).map_err(DzipError::Io)?;
+                writer
+                    .finish()
+                    .map_err(|e| DzipError::Io(std::io::Error::other(e)))?;
+            }
             Ok((CHUNK_LZMA, output))
         }
         // Fallback to Copy for unsupported types

@@ -275,9 +275,11 @@ impl<R: Read + Seek> DzipReader<R> {
             }
 
             let mut decompressed = Vec::with_capacity(chunk.decompressed_length as usize);
-            let mut reader = std::io::Cursor::new(&buffer[..]);
+            let reader = std::io::Cursor::new(&buffer[..]);
             // lzma-rs usually handles LZMA headers automatically.
-            match lzma_rs::lzma_decompress(&mut reader, &mut decompressed) {
+            let mut decoder = lzma_rust2::LzmaReader::new_mem_limit(reader, u32::MAX, None)
+                .map_err(std::io::Error::other)?;
+            match std::io::Read::read_to_end(&mut decoder, &mut decompressed) {
                 Ok(_) => return Ok(decompressed),
                 Err(e) => {
                     let threshold = (chunk.compressed_length as f32 * 0.8) as usize;

@@ -96,3 +96,35 @@ fn test_roundtrip() {
     let read_global_settings = reader.read_global_settings().unwrap();
     assert_eq!(global_settings, read_global_settings);
 }
+
+#[test]
+fn test_lzma_round_trip() {
+    use dzip_core::format::Chunk;
+    use dzip_core::writer::{CompressionMethod, compress_data};
+
+    // Generate some compressible data
+    let original_data: Vec<u8> = (0..1000).map(|i| (i % 255) as u8).collect();
+
+    // Compress
+    let (flags, compressed_data) =
+        compress_data(&original_data, CompressionMethod::Lzma).expect("Compression failed");
+
+    // Manually construct a Chunk for decompression
+    let chunk = Chunk {
+        offset: 0,
+        compressed_length: compressed_data.len() as u32,
+        decompressed_length: original_data.len() as u32,
+        flags,
+        file: 0,
+    };
+
+    let mut reader = DzipReader::new(Cursor::new(compressed_data));
+    let decompressed_data = reader
+        .read_chunk_data(&chunk)
+        .expect("Decompression failed");
+
+    assert_eq!(
+        original_data, decompressed_data,
+        "Decompressed data should match original"
+    );
+}
