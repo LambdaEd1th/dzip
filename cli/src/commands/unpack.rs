@@ -53,6 +53,7 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
         let settings = reader.read_global_settings()?;
         Some(config::GlobalOptions {
             win_size: settings.win_size,
+            flags: settings.flags,
             offset_table_size: settings.offset_table_size,
             offset_tables: settings.offset_tables,
             offset_contexts: settings.offset_contexts,
@@ -70,6 +71,7 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     let mut pack_config = config::DzipConfig {
         archives: archives_names,
         base_dir: std::path::PathBuf::from("."),
+        align: None,
         files: Vec::new(),
         options: global_options,
     };
@@ -249,6 +251,7 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
                 archive_file_index: archive_index,
                 compression,
                 modifiers: String::new(),
+                source_base_dir: None,
             })
         })
         .collect::<Result<Vec<config::FileEntry>>>()?;

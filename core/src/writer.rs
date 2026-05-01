@@ -110,7 +110,7 @@ impl FromStr for CompressionMethod {
             "jpeg" | "jpg" => Ok(CompressionMethod::Jpeg),
             "lzma" => Ok(CompressionMethod::Lzma),
             "combuf" => Ok(CompressionMethod::Combuf),
-            "randomaccess" => Ok(CompressionMethod::RandomAccess),
+            "randomaccess" | "random-access" => Ok(CompressionMethod::RandomAccess),
             _ => Err(DzipError::Io(std::io::Error::other(format!(
                 "Unknown compression method: {}",
                 s

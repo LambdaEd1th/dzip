@@ -6,6 +6,21 @@ use log::{debug, info};
 use rayon::prelude::*;
 use std::io::{Seek, SeekFrom, Write};
 
+fn pad_writer_to_alignment<W: Write + Seek>(writer: &mut W, alignment: u32) -> std::io::Result<()> {
+    if alignment <= 1 {
+        return Ok(());
+    }
+
+    let position = writer.stream_position()?;
+    let alignment = u64::from(alignment);
+    let padding = (alignment - (position % alignment)) % alignment;
+    if padding != 0 {
+        writer.write_all(&vec![0u8; padding as usize])?;
+    }
+
+    Ok(())
+}
+
 pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     let config_path = std::path::Path::new(input_path);
     info!("Parsing config file: {}", config_path.display());
@@ -22,6 +37,35 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
 
     std::fs::create_dir_all(output_dir)?;
 
+    struct LogicalFile {
+        path: std::path::PathBuf,
+        segment_indices: Vec<usize>,
+    }
+
+    let mut logical_files = Vec::new();
+    let mut logical_file_map = std::collections::HashMap::new();
+    let mut segment_to_logical = Vec::with_capacity(config.files.len());
+
+    for (segment_index, entry) in config.files.iter().enumerate() {
+        let archive_path = dzip_core::path::to_archive_format(&entry.path);
+        let logical_index = if let Some(&existing_index) = logical_file_map.get(&archive_path) {
+            existing_index
+        } else {
+            let new_index = logical_files.len();
+            logical_files.push(LogicalFile {
+                path: entry.path.clone(),
+                segment_indices: Vec::new(),
+            });
+            logical_file_map.insert(archive_path, new_index);
+            new_index
+        };
+
+        logical_files[logical_index]
+            .segment_indices
+            .push(segment_index);
+        segment_to_logical.push(logical_index);
+    }
+
     // --- Prepare Metadata ---
     // 1. Strings: User Files + Unique Directories
     // Note: Dzip strings table contains filenames (basename) and directory paths.
@@ -37,9 +81,9 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
 
     // Collect File Names
     let mut file_names = Vec::new();
-    for entry in &config.files {
+    for logical_file in &logical_files {
         // Use filename component
-        if let Some(name) = entry.path.file_name() {
+        if let Some(name) = logical_file.path.file_name() {
             file_names.push(name.to_string_lossy().to_string());
         } else {
             return Err(
@@ -56,8 +100,11 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     // We need to map each file to a dir_id.
     let mut file_dir_ids = Vec::new();
 
-    for entry in &config.files {
-        let parent = entry.path.parent().unwrap_or(std::path::Path::new(""));
+    for logical_file in &logical_files {
+        let parent = logical_file
+            .path
+            .parent()
+            .unwrap_or(std::path::Path::new(""));
         // Force Windows-style backslashes as requested using core utility
         let parent_str = dzip_core::path::to_archive_format(parent);
 
@@ -78,7 +125,7 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
         }
     }
 
-    let num_user_files = file_names.len() as u16;
+    let num_user_files = logical_files.len() as u16;
     let num_directories = (directories.len() + 1) as u16; // +1 for Root?
     // Unpacker: `strings_count = num_user_files + num_directories - 1`.
     // So strings count = files + dirs.
@@ -111,14 +158,16 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     // ChunkTable = NumChunks * 16
     // Auxiliary File List = Sum(len+1) of archives[1..]
 
-    // Assuming 1 chunk per file
-    let num_chunks = num_user_files;
+    let num_chunks = config.files.len() as u16;
 
     let mut header_size = 9;
     for s in &all_strings {
         header_size += s.len() as u64 + 1;
     }
-    let file_map_size = (num_user_files as u64) * 6; // DirID(2) + ChunkID(2) + Term(2)
+    let file_map_size: u64 = logical_files
+        .iter()
+        .map(|logical_file| 4 + (logical_file.segment_indices.len() as u64) * 2)
+        .sum();
     header_size += file_map_size;
 
     header_size += 4; // ChunkSettings
@@ -143,7 +192,8 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
 
     // --- Process Files and Write Chunks ---
     let mut chunks = Vec::new();
-    let mut chunk_map = Vec::new(); // (dir_id, vec![chunk_id])
+    let mut logical_chunk_ids = vec![Vec::new(); logical_files.len()];
+    let alignment = config.align.unwrap_or(0);
 
     // Parallel Compression Phase
     info!("Compressing chunks in parallel...");
@@ -155,12 +205,16 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
             .progress_chars("=>-"),
     );
 
-    let processed_files: Vec<(u16, Vec<u8>, usize, u16)> = config
+    let processed_files: Vec<(usize, u16, Vec<u8>, usize, u16)> = config
         .files
         .par_iter()
         .enumerate()
         .map(|(i, entry)| {
-            let full_path = config.base_dir.join(&entry.path);
+            let full_path = entry
+                .source_base_dir
+                .as_ref()
+                .unwrap_or(&config.base_dir)
+                .join(&entry.path);
             debug!("Processing file {}: {}", i, full_path.display());
             pb.set_message(format!("Compressing {}", entry.path.display()));
 
@@ -171,13 +225,21 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
                     e
                 )))
             })?;
-            let original_len = raw_data.len();
+            let (start, end) = entry.byte_range(raw_data.len()).map_err(|error| {
+                dzip_core::DzipError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    error.to_string(),
+                ))
+            })?;
+            let sliced_data = raw_data[start..end].to_vec();
+            let original_len = sliced_data.len();
 
             let method = entry.compression;
-            let (flags, compressed_data) = compress_data(&raw_data, method)?;
+            let (flags, compressed_data) = compress_data(&sliced_data, method)?;
 
             pb.inc(1);
             Ok((
+                segment_to_logical[i],
                 entry.archive_file_index,
                 compressed_data,
                 original_len,
@@ -189,8 +251,8 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
 
     // Sequential Write Phase
     info!("Writing compressed chunks to volumes...");
-    for (i, (archive_id, compressed_data, original_len, flags)) in
-        processed_files.into_iter().enumerate()
+    for (logical_file_index, archive_id, compressed_data, original_len, flags) in
+        processed_files.into_iter()
     {
         let chunk_id = chunks.len() as u16;
 
@@ -201,6 +263,7 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
             )
         })?;
 
+        pad_writer_to_alignment(writer, alignment)?;
         let offset = writer.stream_position()? as u32;
         writer.write_all(&compressed_data)?;
 
@@ -212,8 +275,14 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
             file: archive_id,
         });
 
-        chunk_map.push((file_dir_ids[i], vec![chunk_id]));
+        logical_chunk_ids[logical_file_index].push(chunk_id);
     }
+
+    let chunk_map: Vec<(u16, Vec<u16>)> = logical_chunk_ids
+        .into_iter()
+        .enumerate()
+        .map(|(logical_index, chunk_ids)| (file_dir_ids[logical_index], chunk_ids))
+        .collect();
 
     // --- Write Header ---
     info!("Writing header to Volume 0...");
@@ -274,17 +343,18 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
 
     let has_dz = chunks.iter().any(|c| (c.flags & CHUNK_DZ) != 0);
     if has_dz {
+        let options = config.options.clone().unwrap_or_default();
         dzip_writer.write_global_settings(&RangeSettings {
-            win_size: 0,
-            flags: 0,
-            offset_table_size: 0,
-            offset_tables: 0,
-            offset_contexts: 0,
-            ref_length_table_size: 0,
-            ref_length_tables: 0,
-            ref_offset_table_size: 0,
-            ref_offset_tables: 0,
-            big_min_match: 0,
+            win_size: options.win_size,
+            flags: options.flags,
+            offset_table_size: options.offset_table_size,
+            offset_tables: options.offset_tables,
+            offset_contexts: options.offset_contexts,
+            ref_length_table_size: options.ref_length_table_size,
+            ref_length_tables: options.ref_length_tables,
+            ref_offset_table_size: options.ref_offset_table_size,
+            ref_offset_tables: options.ref_offset_tables,
+            big_min_match: options.big_min_match,
         })?;
     }
 
