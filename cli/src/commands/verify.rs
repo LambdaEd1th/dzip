@@ -30,6 +30,14 @@ pub fn verify_archive(input_path: &str) -> Result<()> {
     } else {
         Vec::new()
     };
+    let range_settings = if chunks
+        .iter()
+        .any(|chunk| chunk.flags & dzip_core::format::CHUNK_DZ != 0)
+    {
+        Some(reader.read_global_settings()?.validate()?)
+    } else {
+        None
+    };
 
     // Prepare shared data for VolumeManager
     let input_base_dir = std::path::Path::new(input_path)
@@ -56,6 +64,16 @@ pub fn verify_archive(input_path: &str) -> Result<()> {
     }
 
     dzip_core::reader::correct_chunk_sizes(&mut chunks, &file_sizes);
+
+    let dz_context = if let Some(settings) = range_settings {
+        let mut volume_manager = dzip_core::volume::FileSystemVolumeManager::new(
+            input_base_dir_shared.clone(),
+            volume_files_shared.clone(),
+        );
+        Some(reader.load_dz_context(&chunks, settings, &mut volume_manager)?)
+    } else {
+        None
+    };
 
     println!("Verifying archive integrity...");
 
@@ -128,9 +146,11 @@ pub fn verify_archive(input_path: &str) -> Result<()> {
             let mut chunk_status = "OK";
             for &chunk_id in chunk_ids {
                 if let Some(chunk) = chunks.get(chunk_id as usize) {
-                    if let Err(_e) =
-                        local_reader.read_chunk_data_with_volumes(chunk, &mut volume_manager)
-                    {
+                    if let Err(_e) = local_reader.read_chunk_data_with_context(
+                        chunk,
+                        &mut volume_manager,
+                        dz_context.as_ref(),
+                    ) {
                         // Log error but return FAIL string
                         error!("Chunk {} failed verification: {}", chunk_id, _e);
                         chunk_status = "FAIL";

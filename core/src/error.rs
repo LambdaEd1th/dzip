@@ -18,6 +18,9 @@ pub enum DzipError {
     #[error("Unsupported compression method: flags={0:#x}")]
     UnsupportedCompression(u16),
 
+    #[error("Invalid DZ stream: {0}")]
+    InvalidDz(String),
+
     #[error("Volume {0} not found in file list")]
     VolumeNotFound(u16),
 

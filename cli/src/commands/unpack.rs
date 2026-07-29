@@ -1,7 +1,7 @@
 use crate::config;
 use dzip_core::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, error, info, warn};
+use log::{debug, info};
 use rayon::prelude::*;
 
 pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
@@ -49,24 +49,27 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     use dzip_core::format::CHUNK_DZ;
     let has_dz_chunks = chunks.iter().any(|c| (c.flags & CHUNK_DZ) != 0);
 
-    let global_options = if has_dz_chunks {
-        let settings = reader.read_global_settings()?;
-        Some(config::GlobalOptions {
-            win_size: settings.win_size,
-            flags: settings.flags,
-            offset_table_size: settings.offset_table_size,
-            offset_tables: settings.offset_tables,
-            offset_contexts: settings.offset_contexts,
-            ref_length_table_size: settings.ref_length_table_size,
-            ref_length_tables: settings.ref_length_tables,
-            ref_offset_table_size: settings.ref_offset_table_size,
-            ref_offset_tables: settings.ref_offset_tables,
-            big_min_match: settings.big_min_match,
-            ..config::GlobalOptions::default()
-        })
+    let range_settings = if has_dz_chunks {
+        Some(reader.read_global_settings()?.validate()?)
     } else {
         None
     };
+    let global_options = range_settings.map(|settings| config::GlobalOptions {
+        win_size: settings.win_size,
+        flags: settings.flags,
+        offset_table_size: settings.offset_table_size,
+        offset_tables: settings.offset_tables,
+        offset_contexts: settings.offset_contexts,
+        ref_length_table_size: settings.ref_length_table_size,
+        ref_length_tables: settings.ref_length_tables,
+        ref_offset_table_size: settings.ref_offset_table_size,
+        ref_offset_tables: settings.ref_offset_tables,
+        big_min_match: settings.big_min_match,
+        use_combuf: chunks
+            .iter()
+            .any(|chunk| chunk.flags & dzip_core::format::CHUNK_COMBUF != 0),
+        ..config::GlobalOptions::default()
+    });
 
     let mut pack_config = config::DzipConfig {
         archives: archives_names,
@@ -99,6 +102,16 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
     }
     dzip_core::reader::correct_chunk_sizes(&mut chunks, &file_sizes);
     // -----------------------------
+
+    let dz_context = if let Some(settings) = range_settings {
+        let mut volume_manager = dzip_core::volume::FileSystemVolumeManager::new(
+            input_base_dir_shared.clone(),
+            volume_files_shared.clone(),
+        );
+        Some(reader.load_dz_context(&chunks, settings, &mut volume_manager)?)
+    } else {
+        None
+    };
 
     info!("Extracting {} files to '{}'...", map.len(), output_dir);
     let pb = ProgressBar::new(map.len() as u64);
@@ -227,23 +240,13 @@ pub fn unpack_archive(input_path: &str, output_dir: &str) -> Result<()> {
                     chunk.flags
                 );
                 */
-                match reader.read_chunk_data_with_volumes(chunk, &mut volume_manager) {
-                    Ok(data) => {
-                        use std::io::Write;
-                        out_file.write_all(&data)?;
-                    }
-                    Err(dzip_core::DzipError::UnsupportedCompression(flags)) => {
-                        warn!(
-                            "Skipping chunk {} due to unsupported compression (flags: {:#x})",
-                            chunk_id, flags
-                        );
-                    }
-                    Err(_e) => {
-                        error!("Error extracting chunk {}: {}", chunk_id, _e);
-                        // Continue? Or fail? Currently continue.
-                        continue;
-                    }
-                }
+                let data = reader.read_chunk_data_with_context(
+                    chunk,
+                    &mut volume_manager,
+                    dz_context.as_ref(),
+                )?;
+                use std::io::Write;
+                out_file.write_all(&data)?;
             }
 
             Ok(config::FileEntry {

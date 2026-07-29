@@ -1,6 +1,9 @@
 use crate::config;
-use dzip_core::format::{ArchiveSettings, CHUNK_DZ, Chunk, ChunkSettings, RangeSettings};
-use dzip_core::{Result, compress_data};
+use dzip_core::dz::{DzEncoderOptions, compress_archive};
+use dzip_core::format::{
+    ArchiveSettings, CHUNK_COMBUF, CHUNK_DZ, CHUNK_LZMA, Chunk, ChunkSettings, RangeSettings,
+};
+use dzip_core::{CompressionMethod, Result, compress_data};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info};
 use rayon::prelude::*;
@@ -150,53 +153,16 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
         writers.insert(i as u16, f);
     }
 
-    // --- Pre-calculate Header Size (Volume 0) ---
-    // Header (ArchiveSettings) = 4+2+2+1 = 9
-    // Strings = Sum(len+1)
-    // FileMap (ChunkMap) = NumFiles * (2 + NumChunksInFile*2 + 2)
-    // ChunkSettings = 2+2=4
-    // ChunkTable = NumChunks * 16
-    // Auxiliary File List = Sum(len+1) of archives[1..]
-
-    let num_chunks = config.files.len() as u16;
-
-    let mut header_size = 9;
-    for s in &all_strings {
-        header_size += s.len() as u64 + 1;
-    }
-    let file_map_size: u64 = logical_files
-        .iter()
-        .map(|logical_file| 4 + (logical_file.segment_indices.len() as u64) * 2)
-        .sum();
-    header_size += file_map_size;
-
-    header_size += 4; // ChunkSettings
-    let chunk_table_size = (num_chunks as u64) * 16;
-    header_size += chunk_table_size;
-
-    // Add Volume List Size
-    if config.archives.len() > 1 {
-        for name in &config.archives[1..] {
-            header_size += name.len() as u64 + 1;
-        }
+    struct PreparedFile {
+        logical_file_index: usize,
+        archive_id: u16,
+        data: Vec<u8>,
+        method: CompressionMethod,
     }
 
-    // Should we add GlobalSettings size? Only if we use DZ compression.
-    // Config options might specify usage. For now assume minimal header.
-    // We will update this offset if needed.
-
-    // Seek Volume 0
-    if let Some(w) = writers.get_mut(&0) {
-        w.seek(SeekFrom::Start(header_size))?;
-    }
-
-    // --- Process Files and Write Chunks ---
-    let mut chunks = Vec::new();
-    let mut logical_chunk_ids = vec![Vec::new(); logical_files.len()];
-    let alignment = config.align.unwrap_or(0);
-
-    // Parallel Compression Phase
-    info!("Compressing chunks in parallel...");
+    // Read and slice inputs in parallel. DZ compression itself is archive-scoped
+    // because it may build a cross-file common buffer.
+    info!("Reading source chunks in parallel...");
     let pb = ProgressBar::new(config.files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -205,7 +171,7 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
             .progress_chars("=>-"),
     );
 
-    let processed_files: Vec<(usize, u16, Vec<u8>, usize, u16)> = config
+    let prepared_files: Vec<PreparedFile> = config
         .files
         .par_iter()
         .enumerate()
@@ -232,22 +198,136 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
                 ))
             })?;
             let sliced_data = raw_data[start..end].to_vec();
-            let original_len = sliced_data.len();
-
-            let method = entry.compression;
-            let (flags, compressed_data) = compress_data(&sliced_data, method)?;
-
             pb.inc(1);
+            Ok(PreparedFile {
+                logical_file_index: segment_to_logical[i],
+                archive_id: entry.archive_file_index,
+                data: sliced_data,
+                method: entry.compression,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    pb.finish_with_message("Input read complete");
+
+    let range_settings = config
+        .options
+        .as_ref()
+        .map(|options| RangeSettings {
+            win_size: options.win_size,
+            flags: options.flags,
+            offset_table_size: options.offset_table_size,
+            offset_tables: options.offset_tables,
+            offset_contexts: options.offset_contexts,
+            ref_length_table_size: options.ref_length_table_size,
+            ref_length_tables: options.ref_length_tables,
+            ref_offset_table_size: options.ref_offset_table_size,
+            ref_offset_tables: options.ref_offset_tables,
+            big_min_match: options.big_min_match,
+        })
+        .unwrap_or_default()
+        .validate()?;
+    let dz_inputs: Vec<Vec<u8>> = prepared_files
+        .iter()
+        .filter(|file| file.method == CompressionMethod::Dz)
+        .map(|file| file.data.clone())
+        .collect();
+    let dz_options = config.options.clone().unwrap_or_default();
+    let encoded_dz = if dz_inputs.is_empty() {
+        None
+    } else {
+        info!("Compressing {} DZ chunks...", dz_inputs.len());
+        Some(compress_archive(
+            &dz_inputs,
+            &DzEncoderOptions {
+                settings: range_settings,
+                use_combuf: dz_options.use_combuf,
+                preprocess: dz_options.preprocess,
+                trim_reference_factor: dz_options.trim_reference_factor,
+                ..DzEncoderOptions::default()
+            },
+        )?)
+    };
+
+    let mut next_dz_index = 0usize;
+    let dz_indices: Vec<Option<usize>> = prepared_files
+        .iter()
+        .map(|file| {
+            if file.method == CompressionMethod::Dz {
+                let index = next_dz_index;
+                next_dz_index += 1;
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let processed_files: Vec<_> = prepared_files
+        .into_par_iter()
+        .enumerate()
+        .map(|(file_index, file)| {
+            let original_len = file.data.len();
+            let (flags, compressed) = if let Some(dz_index) = dz_indices[file_index] {
+                let encoded = encoded_dz
+                    .as_ref()
+                    .and_then(|archive| archive.chunks.get(dz_index))
+                    .ok_or_else(|| {
+                        dzip_core::DzipError::InvalidDz(
+                            "missing archive-scoped DZ result".to_string(),
+                        )
+                    })?
+                    .clone();
+                (CHUNK_DZ, encoded)
+            } else {
+                compress_data(&file.data, file.method)?
+            };
             Ok((
-                segment_to_logical[i],
-                entry.archive_file_index,
-                compressed_data,
+                file.logical_file_index,
+                file.archive_id,
+                compressed,
                 original_len,
                 flags,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    pb.finish_with_message("Compression complete");
+
+    let has_dz = !dz_inputs.is_empty();
+    let common_buffer = encoded_dz.and_then(|archive| archive.common_buffer);
+    let total_chunks = processed_files.len() + usize::from(common_buffer.is_some());
+    let num_chunks = u16::try_from(total_chunks).map_err(|_| {
+        dzip_core::DzipError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "archive contains more than 65535 chunks",
+        ))
+    })?;
+
+    // Calculate the final header after archive-scoped compression has decided
+    // whether a CHUNK_COMBUF entry is required.
+    let mut header_size = 9u64;
+    header_size += all_strings
+        .iter()
+        .map(|value| value.len() as u64 + 1)
+        .sum::<u64>();
+    header_size += logical_files
+        .iter()
+        .map(|logical_file| 4 + (logical_file.segment_indices.len() as u64) * 2)
+        .sum::<u64>();
+    header_size += 4 + u64::from(num_chunks) * 16;
+    header_size += config.archives[1..]
+        .iter()
+        .map(|value| value.len() as u64 + 1)
+        .sum::<u64>();
+    if has_dz {
+        header_size += 10;
+    }
+    writers
+        .get_mut(&0)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Volume 0 missing"))?
+        .seek(SeekFrom::Start(header_size))?;
+
+    // --- Process Files and Write Chunks ---
+    let mut chunks = Vec::with_capacity(total_chunks);
+    let mut logical_chunk_ids = vec![Vec::new(); logical_files.len()];
+    let alignment = config.align.unwrap_or(0);
 
     // Sequential Write Phase
     info!("Writing compressed chunks to volumes...");
@@ -267,15 +347,39 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
         let offset = writer.stream_position()? as u32;
         writer.write_all(&compressed_data)?;
 
+        // dzip.exe 1.1.3 stores the uncompressed size in both length
+        // fields for LZMA chunks. The physical stream length is recovered
+        // from the next chunk offset (or EOF) when the archive is read.
+        let compressed_length = if flags & CHUNK_LZMA != 0 {
+            original_len
+        } else {
+            compressed_data.len()
+        };
         chunks.push(Chunk {
             offset,
-            compressed_length: compressed_data.len() as u32,
+            compressed_length: compressed_length as u32,
             decompressed_length: original_len as u32,
             flags,
             file: archive_id,
         });
 
         logical_chunk_ids[logical_file_index].push(chunk_id);
+    }
+
+    if let Some(common_data) = common_buffer {
+        let writer = writers
+            .get_mut(&0)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Volume 0 missing"))?;
+        pad_writer_to_alignment(writer, alignment)?;
+        let offset = writer.stream_position()? as u32;
+        writer.write_all(&common_data)?;
+        chunks.push(Chunk {
+            offset,
+            compressed_length: common_data.len() as u32,
+            decompressed_length: 0,
+            flags: CHUNK_COMBUF,
+            file: 0,
+        });
     }
 
     let chunk_map: Vec<(u16, Vec<u16>)> = logical_chunk_ids
@@ -341,21 +445,8 @@ pub fn pack_archive(input_path: &str, output_dir: &str) -> Result<()> {
         dzip_writer.write_strings(aux_files)?;
     }
 
-    let has_dz = chunks.iter().any(|c| (c.flags & CHUNK_DZ) != 0);
     if has_dz {
-        let options = config.options.clone().unwrap_or_default();
-        dzip_writer.write_global_settings(&RangeSettings {
-            win_size: options.win_size,
-            flags: options.flags,
-            offset_table_size: options.offset_table_size,
-            offset_tables: options.offset_tables,
-            offset_contexts: options.offset_contexts,
-            ref_length_table_size: options.ref_length_table_size,
-            ref_length_tables: options.ref_length_tables,
-            ref_offset_table_size: options.ref_offset_table_size,
-            ref_offset_tables: options.ref_offset_tables,
-            big_min_match: options.big_min_match,
-        })?;
+        dzip_writer.write_global_settings(&range_settings)?;
     }
 
     info!("Pack complete.");
