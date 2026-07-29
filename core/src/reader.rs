@@ -3,6 +3,12 @@ use crate::format::*;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{BufRead, BufReader, Read, Seek};
 
+#[derive(Clone, Debug)]
+pub struct DzDecodeContext {
+    pub settings: RangeSettings,
+    pub common_buffer: Option<crate::dz::DzCommonBuffer>,
+}
+
 pub struct DzipReader<R: Read + Seek> {
     reader: BufReader<R>,
 }
@@ -153,7 +159,7 @@ impl<R: Read + Seek> DzipReader<R> {
     }
 
     pub fn read_chunk_data(&mut self, chunk: &Chunk) -> Result<Vec<u8>> {
-        Self::decompress_chunk_data(&mut self.reader, chunk)
+        Self::decompress_chunk_data(&mut self.reader, chunk, None)
     }
 
     pub fn read_chunk_data_with_volumes(
@@ -161,15 +167,67 @@ impl<R: Read + Seek> DzipReader<R> {
         chunk: &Chunk,
         volume_source: &mut dyn VolumeSource,
     ) -> Result<Vec<u8>> {
+        self.read_chunk_data_with_context(chunk, volume_source, None)
+    }
+
+    pub fn read_chunk_data_with_context(
+        &mut self,
+        chunk: &Chunk,
+        volume_source: &mut dyn VolumeSource,
+        dz_context: Option<&DzDecodeContext>,
+    ) -> Result<Vec<u8>> {
         if chunk.file == 0 {
-            Self::decompress_chunk_data(&mut self.reader, chunk)
+            Self::decompress_chunk_data(&mut self.reader, chunk, dz_context)
         } else {
             let reader = volume_source.open_volume(chunk.file)?;
-            Self::decompress_chunk_data(reader, chunk)
+            Self::decompress_chunk_data(reader, chunk, dz_context)
         }
     }
 
-    fn decompress_chunk_data(reader: &mut dyn ReadSeek, chunk: &Chunk) -> Result<Vec<u8>> {
+    pub fn load_dz_context(
+        &mut self,
+        chunks: &[Chunk],
+        settings: RangeSettings,
+        volume_source: &mut dyn VolumeSource,
+    ) -> Result<DzDecodeContext> {
+        let settings = settings.validate()?;
+        let common_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|chunk| chunk.flags & CHUNK_COMBUF != 0)
+            .copied()
+            .collect();
+        if common_chunks.is_empty() {
+            return Ok(DzDecodeContext {
+                settings,
+                common_buffer: None,
+            });
+        }
+
+        let mut encoded_chunks = Vec::with_capacity(common_chunks.len());
+        for chunk in common_chunks {
+            let mut data = vec![0u8; chunk.compressed_length as usize];
+            if chunk.file == 0 {
+                self.reader
+                    .seek(std::io::SeekFrom::Start(u64::from(chunk.offset)))?;
+                self.reader.read_exact(&mut data)?;
+            } else {
+                let reader = volume_source.open_volume(chunk.file)?;
+                reader.seek(std::io::SeekFrom::Start(u64::from(chunk.offset)))?;
+                reader.read_exact(&mut data)?;
+            }
+            encoded_chunks.push(data);
+        }
+        Ok(DzDecodeContext {
+            settings,
+            common_buffer: Some(crate::dz::DzCommonBuffer::new(settings, encoded_chunks)?),
+        })
+    }
+
+    fn decompress_chunk_data(
+        reader: &mut dyn ReadSeek,
+        chunk: &Chunk,
+        dz_context: Option<&DzDecodeContext>,
+    ) -> Result<Vec<u8>> {
         log::trace!(
             "Decompressing Chunk: offset={}, comp={}, decomp={}, flags={:x}",
             chunk.offset,
@@ -303,7 +361,20 @@ impl<R: Read + Seek> DzipReader<R> {
             }
         }
 
-        // TODO: Implement other decompression methods (e.g. CHUNK_DZ)
+        if (chunk.flags & CHUNK_DZ) != 0 {
+            let context = dz_context.ok_or_else(|| {
+                DzipError::InvalidDz(
+                    "DZ chunk requires RangeSettings and archive context".to_string(),
+                )
+            })?;
+            return crate::dz::decompress_chunk_with_common_buffer(
+                &buffer,
+                chunk.decompressed_length as usize,
+                context.settings,
+                context.common_buffer.as_ref(),
+            );
+        }
+
         Err(DzipError::UnsupportedCompression(chunk.flags))
     }
 }
@@ -332,6 +403,12 @@ pub fn correct_chunk_sizes(
     let mut chunks_by_file: std::collections::HashMap<u16, Vec<usize>> =
         std::collections::HashMap::new();
     for (i, chunk) in chunks.iter().enumerate() {
+        // Virtual zero chunks and zero-length COMBUF placeholders occupy no
+        // bytes and must not become a boundary for a physical neighbor at the
+        // same offset.
+        if chunk.flags & CHUNK_ZERO != 0 || chunk.compressed_length == 0 {
+            continue;
+        }
         chunks_by_file.entry(chunk.file).or_default().push(i);
     }
 

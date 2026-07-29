@@ -124,8 +124,17 @@ pub fn parse_config(path: &Path) -> Result<DzipConfig> {
     };
 
     let mut include_stack = HashSet::new();
-    let initial_base_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-    parse_legacy_config_file(path, &mut config, &mut include_stack, initial_base_dir, true)?;
+    let initial_base_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    parse_legacy_config_file(
+        path,
+        &mut config,
+        &mut include_stack,
+        initial_base_dir,
+        true,
+    )?;
 
     Ok(config)
 }
@@ -189,7 +198,10 @@ fn parse_legacy_config_file(
             }
             "file" => {
                 if parts.len() < 4 {
-                    bail!("Invalid file directive '{}': expected file <path> <index> <algo>", line);
+                    bail!(
+                        "Invalid file directive '{}': expected file <path> <index> <algo>",
+                        line
+                    );
                 }
 
                 let archive_path = dzip_core::path::resolve_relative_path(parts[1])
@@ -223,7 +235,8 @@ fn parse_legacy_config_file(
                 }
             }
             "isnotdefault" => {
-                current_options(config).is_not_default = parse_bool_flag(parts.get(1), "isnotdefault")?;
+                current_options(config).is_not_default =
+                    parse_bool_flag(parts.get(1), "isnotdefault")?;
             }
             "max_mem_usage" => {
                 current_options(config).max_mem_usage = parse_value(parts.get(1), "max_mem_usage")?;
@@ -250,7 +263,8 @@ fn parse_legacy_config_file(
                         parse_value(parts.get(1), "OffsetTableSize")?;
                 }
                 "offsettables" => {
-                    current_options(config).offset_tables = parse_value(parts.get(1), "OffsetTables")?;
+                    current_options(config).offset_tables =
+                        parse_value(parts.get(1), "OffsetTables")?;
                 }
                 "offsetcontexts" => {
                     current_options(config).offset_contexts =
@@ -273,7 +287,8 @@ fn parse_legacy_config_file(
                         parse_value(parts.get(1), "RefOffsetTables")?;
                 }
                 "bigminmatch" => {
-                    current_options(config).big_min_match = parse_value(parts.get(1), "BigMinMatch")?;
+                    current_options(config).big_min_match =
+                        parse_value(parts.get(1), "BigMinMatch")?;
                 }
                 _ => {}
             },
@@ -294,9 +309,9 @@ where
     T::Err: std::fmt::Display,
 {
     let raw_value = value.with_context(|| format!("Missing value for {}", key))?;
-    raw_value
-        .parse::<T>()
-        .map_err(|error| anyhow::anyhow!("Failed to parse {} value '{}': {}", key, raw_value, error))
+    raw_value.parse::<T>().map_err(|error| {
+        anyhow::anyhow!("Failed to parse {} value '{}': {}", key, raw_value, error)
+    })
 }
 
 fn parse_bool_flag(value: Option<&&str>, key: &str) -> Result<bool> {
@@ -304,7 +319,11 @@ fn parse_bool_flag(value: Option<&&str>, key: &str) -> Result<bool> {
     match raw_value.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" => Ok(false),
-        _ => bail!("Failed to parse {} value '{}': expected boolean/0/1", key, raw_value),
+        _ => bail!(
+            "Failed to parse {} value '{}': expected boolean/0/1",
+            key,
+            raw_value
+        ),
     }
 }
 
@@ -316,18 +335,27 @@ fn parse_file_modifiers(modifiers: &str) -> Result<(Option<u8>, Option<u8>)> {
     while let Some(token) = tokens.next() {
         match token.to_ascii_lowercase().as_str() {
             "from" => {
-                let value = tokens
-                    .next()
-                    .with_context(|| format!("Missing percentage after 'from' in modifiers '{}'", modifiers))?;
-                if from_percent.replace(parse_percentage(value, modifiers)?).is_some() {
+                let value = tokens.next().with_context(|| {
+                    format!(
+                        "Missing percentage after 'from' in modifiers '{}'",
+                        modifiers
+                    )
+                })?;
+                if from_percent
+                    .replace(parse_percentage(value, modifiers)?)
+                    .is_some()
+                {
                     bail!("Duplicate 'from' modifier in '{}'", modifiers);
                 }
             }
             "to" => {
-                let value = tokens
-                    .next()
-                    .with_context(|| format!("Missing percentage after 'to' in modifiers '{}'", modifiers))?;
-                if to_percent.replace(parse_percentage(value, modifiers)?).is_some() {
+                let value = tokens.next().with_context(|| {
+                    format!("Missing percentage after 'to' in modifiers '{}'", modifiers)
+                })?;
+                if to_percent
+                    .replace(parse_percentage(value, modifiers)?)
+                    .is_some()
+                {
                     bail!("Duplicate 'to' modifier in '{}'", modifiers);
                 }
             }
@@ -341,7 +369,10 @@ fn parse_file_modifiers(modifiers: &str) -> Result<(Option<u8>, Option<u8>)> {
 fn parse_percentage(value: &str, modifiers: &str) -> Result<u8> {
     let trimmed = value.trim_end_matches('%');
     let percent = trimmed.parse::<u8>().with_context(|| {
-        format!("Invalid percentage '{}' in modifiers '{}'", value, modifiers)
+        format!(
+            "Invalid percentage '{}' in modifiers '{}'",
+            value, modifiers
+        )
     })?;
     if percent > 100 {
         bail!("Percentage '{}' in '{}' exceeds 100", value, modifiers);

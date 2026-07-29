@@ -121,6 +121,10 @@ impl FromStr for CompressionMethod {
 
 pub fn compress_data(data: &[u8], method: CompressionMethod) -> Result<(u16, Vec<u8>)> {
     match method {
+        CompressionMethod::Dz => Ok((
+            CHUNK_DZ,
+            crate::dz::compress_chunk(data, RangeSettings::default())?,
+        )),
         CompressionMethod::Copy => Ok((CHUNK_COPYCOMP, data.to_vec())),
         CompressionMethod::Zero => Ok((CHUNK_ZERO, Vec::new())), // Zero chunk has 0 compressed size
         CompressionMethod::Zlib => {

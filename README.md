@@ -12,8 +12,10 @@ This project provides both a robust core library (`dzip-core`) and a feature-ric
 - **Parallel Processing**: Utilizes multi-threading (`rayon`) for packing, unpacking, and verification, ensuring maximum throughput.
 - **Multi-Volume Support**: Seamlessly handles split archives (e.g., `archive.dz`, `archive01.dz`, ...).
 - **Compression Support**:
-    - **Cloud/Distributed**: Zlib, Bzip2, LZMA.
-    - **Specialized**: Zero (Run-length), Copy (Store), Combuf.
+    - **General purpose**: Zlib, Bzip2, LZMA.
+    - **Native DZ**: Marmalade-compatible adaptive range coding, LZ77, split
+      volumes, and optional cross-file common-buffer references.
+    - **Specialized**: Zero (Run-length) and Copy (Store).
 - **Robust Verification**: Integrity checking for all chunks, including cross-validation of chunk headers and data.
 - **User Friendly**:
     - Progress bars for long-running operations.
@@ -101,6 +103,12 @@ archive_file_index = 0       # Which volume to store this file in (0-based)
 path = "Data/text.txt"
 compression = "Bzip"
 archive_file_index = 1       # Store in second volume
+
+[options]
+method = "dz"
+use_combuf = true            # Enable cross-file duplicate references
+preprocess = true
+win_size = 16                # 64 KiB LZ window
 ```
 
 ## Supported Platforms
