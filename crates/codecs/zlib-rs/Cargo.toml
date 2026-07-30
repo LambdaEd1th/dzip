@@ -1,0 +1,47 @@
+[package]
+edition = "2024"
+rust-version = "1.85"
+name = "zlib-rs"
+version = "0.113.0"
+description = "Pure Rust zlib implementation calibrated to zlib 1.1.3"
+homepage = "https://github.com/trifectatechfoundation/zlib-rs"
+readme = "README.md"
+license = "Zlib"
+repository = "https://github.com/LambdaEd1th/dzip-rs"
+
+[features]
+ZLIB_DEBUG = []
+__internal-fuzz = ["arbitrary"]
+__internal-fuzz-disable-checksum = []
+__internal-test = ["quickcheck"]
+avx512 = ["vpclmulqdq"]
+c-allocator = []
+default = [
+    "std",
+]
+rust-allocator = []
+std = ["rust-allocator"]
+vpclmulqdq = []
+
+[lib]
+name = "zlib_rs"
+path = "src/lib.rs"
+
+[dependencies.arbitrary]
+version = "1.0"
+features = ["derive"]
+optional = true
+
+[dependencies.quickcheck]
+version = "1.0.3"
+features = []
+optional = true
+default-features = false
+
+[dev-dependencies]
+crc32fast = "1.3.2"
+memoffset = "0.9.1"
+quickcheck = { version = "1.0.3", default-features = false }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

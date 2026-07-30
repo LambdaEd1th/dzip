@@ -1,0 +1,18 @@
+[package]
+name = "dzip-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Modern command-line builder, creator, extractor, and inspector for Dzip archives"
+readme = "../../README.md"
+
+[dependencies]
+dzip = { version = "0.4.0", path = "../dzip", features = ["parallel", "serde"] }
+clap = { version = "4.6", features = ["derive"] }
+anyhow = "1.0"
+serde.workspace = true
+toml = "1.1"
+log.workspace = true
+env_logger = "0.11"

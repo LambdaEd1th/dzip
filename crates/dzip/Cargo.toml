@@ -1,0 +1,35 @@
+[package]
+name = "dzip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Pure Rust library for reading, extracting, creating, and inspecting Dzip archives"
+readme = "../../README.md"
+keywords = ["archive", "compression", "dzip", "gamedev"]
+categories = ["compression", "encoding"]
+
+[dependencies]
+byteorder = "1.5"
+bzip-rs = { version = "0.103.0", path = "../codecs/bzip-rs", default-features = false, features = ["std"], optional = true }
+dz-rs = { version = "0.4.0", path = "../codecs/dz-rs", optional = true }
+lzma-rs = { version = "0.920.0", path = "../codecs/lzma-rs", features = ["decode"], optional = true }
+rayon = { version = "1.12", optional = true }
+serde = { workspace = true, optional = true }
+zlib-rs = { version = "0.113.0", path = "../codecs/zlib-rs", default-features = false, features = ["std"], optional = true }
+
+[features]
+default = ["encode", "decode", "all-codecs"]
+encode = []
+decode = []
+all-codecs = ["bzip", "dz", "lzma", "zlib"]
+bzip = ["dep:bzip-rs"]
+dz = ["dep:dz-rs"]
+lzma = ["dep:lzma-rs"]
+zlib = ["dep:zlib-rs"]
+parallel = ["dep:rayon"]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+sha2 = "0.11"

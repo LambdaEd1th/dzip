@@ -1,0 +1,17 @@
+[package]
+name = "lzma-rs"
+version = "0.920.0"
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+description = "Pure-Rust encoder retargeted for byte-exact LZMA SDK 9.20 output."
+repository = "https://github.com/LambdaEd1th/dzip-rs"
+readme = "README.md"
+
+[features]
+default = []
+decode = []
+
+[lib]
+name = "lzma_rs"
+path = "src/lib.rs"

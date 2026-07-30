@@ -29,10 +29,29 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint with Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy -p dzip -p dzip-cli -p dz-rs -p lzma-rs --all-targets --no-deps -- -D warnings
+
+      - name: Lint public library features
+        run: cargo clippy -p dzip --all-targets --all-features --no-deps -- -D warnings
 
       - name: Build
         run: cargo build --workspace --verbose
 
       - name: Run Tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --all-features --verbose
+
+      - name: Check library feature boundaries
+        run: |
+          cargo check -p dzip --no-default-features
+          cargo check -p dzip --no-default-features --features decode
+          cargo check -p dzip --no-default-features --features encode
+          cargo check -p dzip --all-features
+          cargo test -p dzip --no-default-features --features encode --lib
+
+      - name: Check Rust 1.85 MSRV
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          cargo +1.85.0 check --workspace
+
+      - name: Check documentation
+        run: cargo test -p dzip --all-features --doc
