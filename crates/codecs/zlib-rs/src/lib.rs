@@ -11,7 +11,6 @@ pub mod deflate;
 pub mod inflate;
 
 mod adler32;
-mod cpu_features;
 mod stable;
 mod weak_slice;
 

@@ -4,7 +4,6 @@ use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::Range;
 
-use crate::cpu_features::CpuFeatures;
 use crate::weak_slice::WeakSliceMut;
 
 pub struct Writer<'a> {
@@ -83,7 +82,6 @@ impl<'a> Writer<'a> {
     /// Appends data to the buffer
     #[inline(always)]
     pub fn extend(&mut self, buf: &[u8]) {
-        // using simd here (on x86_64) was not fruitful
         self.buf.as_mut_slice()[self.filled..][..buf.len()].copy_from_slice(slice_to_uninit(buf));
 
         self.filled += buf.len();
@@ -91,53 +89,6 @@ impl<'a> Writer<'a> {
 
     #[inline(always)]
     pub fn extend_from_window(&mut self, window: &super::window::Window, range: Range<usize>) {
-        self.extend_from_window_with_features::<{ CpuFeatures::NONE }>(window, range)
-    }
-
-    pub fn extend_from_window_with_features<const FEATURES: usize>(
-        &mut self,
-        window: &super::window::Window,
-        range: Range<usize>,
-    ) {
-        match FEATURES {
-            #[cfg(target_arch = "x86_64")]
-            CpuFeatures::AVX2 => self.extend_from_window_help::<32>(window, range),
-            _ => self.extend_from_window_runtime_dispatch(window, range),
-        }
-    }
-
-    fn extend_from_window_runtime_dispatch(
-        &mut self,
-        window: &super::window::Window,
-        range: Range<usize>,
-    ) {
-        // NOTE: the dynamic check for avx512 makes avx2 slower. Measure this carefully before re-enabling
-        //
-        //        #[cfg(target_arch = "x86_64")]
-        //        if crate::cpu_features::is_enabled_avx512() {
-        //            return self.extend_from_window_help::<64>(window, range);
-        //        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_avx2_and_bmi2() {
-            return self.extend_from_window_help::<32>(window, range);
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_sse() {
-            return self.extend_from_window_help::<16>(window, range);
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if crate::cpu_features::is_enabled_neon() {
-            return self.extend_from_window_help::<16>(window, range);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        if crate::cpu_features::is_enabled_simd128() {
-            return self.extend_from_window_help::<16>(window, range);
-        }
-
         self.extend_from_window_help::<8>(window, range)
     }
 
@@ -154,7 +105,6 @@ impl<'a> Writer<'a> {
             // at the end, making it always safe to perform an (unaligned) Chunk read anywhere in
             // the window slice.
             //
-            // The calling function checks for CPU features requirements for C.
             unsafe {
                 let src = window.as_ptr();
                 Self::copy_chunk_unchecked::<N>(
@@ -192,50 +142,6 @@ impl<'a> Writer<'a> {
 
     #[inline(always)]
     pub fn copy_match(&mut self, offset_from_end: usize, length: usize) {
-        self.copy_match_with_features::<{ CpuFeatures::NONE }>(offset_from_end, length)
-    }
-
-    #[inline(always)]
-    pub fn copy_match_with_features<const FEATURES: usize>(
-        &mut self,
-        offset_from_end: usize,
-        length: usize,
-    ) {
-        match FEATURES {
-            #[cfg(target_arch = "x86_64")]
-            CpuFeatures::AVX2 => self.copy_match_help::<32>(offset_from_end, length),
-            _ => self.copy_match_runtime_dispatch(offset_from_end, length),
-        }
-    }
-
-    fn copy_match_runtime_dispatch(&mut self, offset_from_end: usize, length: usize) {
-        // NOTE: the dynamic check for avx512 makes avx2 slower. Measure this carefully before re-enabling
-        //
-        //        #[cfg(target_arch = "x86_64")]
-        //        if crate::cpu_features::is_enabled_avx512() {
-        //            return self.copy_match_help::<core::arch::x86_64::__m512i>(offset_from_end, length);
-        //        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_avx2_and_bmi2() {
-            return self.copy_match_help::<32>(offset_from_end, length);
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_sse() {
-            return self.copy_match_help::<16>(offset_from_end, length);
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if crate::cpu_features::is_enabled_neon() {
-            return self.copy_match_help::<16>(offset_from_end, length);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        if crate::cpu_features::is_enabled_simd128() {
-            return self.copy_match_help::<16>(offset_from_end, length);
-        }
-
         self.copy_match_help::<8>(offset_from_end, length)
     }
 
@@ -261,9 +167,6 @@ impl<'a> Writer<'a> {
                     buf[current..][..length].fill(element);
                 }
                 _ => {
-                    // there is a SIMD implementation of this logic, which _should_ be faster, but
-                    // isn't in measurements on x86_64. It still might be for other architectures,
-                    // adds a lot of complexity and unsafe code.
                     for i in 0..length {
                         buf[current + i] = buf[current - offset_from_end + i];
                     }
@@ -319,7 +222,7 @@ impl<'a> Writer<'a> {
             // SAFETY: if statement and checked_sub ensures we stay in bounds.
             unsafe { Self::copy_chunk_unchecked::<N>(ptr.add(start), ptr.add(current), length) }
         } else {
-            // a full simd copy does not fit in the output buffer
+            // A full word-sized copy does not fit in the output buffer.
             buf.copy_within(start..start + length, current);
         }
     }
@@ -433,31 +336,6 @@ mod test {
             };
         }
 
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_avx512() {
-            helper!(Writer::copy_match_help::<64>);
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_avx2_and_bmi2() {
-            helper!(Writer::copy_match_help::<32>);
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_sse() {
-            helper!(Writer::copy_match_help::<16>);
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if crate::cpu_features::is_enabled_neon() {
-            helper!(Writer::copy_match_help::<16>);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        if crate::cpu_features::is_enabled_simd128() {
-            helper!(Writer::copy_match_help::<16>);
-        }
-
         helper!(Writer::copy_match_help::<8>);
     }
 
@@ -471,7 +349,7 @@ mod test {
     }
 
     #[test]
-    fn copy_match_insufficient_space_for_simd() {
+    fn copy_match_insufficient_space_for_word_copy() {
         let mut buf = [1, 2, 3, 0xAA, 0xAA].map(MaybeUninit::new);
         let mut writer = Writer {
             buf: unsafe { WeakSliceMut::from_raw_parts_mut(buf.as_mut_ptr(), buf.len()) },

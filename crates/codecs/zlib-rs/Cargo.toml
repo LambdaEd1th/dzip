@@ -14,14 +14,12 @@ ZLIB_DEBUG = []
 __internal-fuzz = ["arbitrary"]
 __internal-fuzz-disable-checksum = []
 __internal-test = ["quickcheck"]
-avx512 = ["vpclmulqdq"]
 c-allocator = []
 default = [
     "std",
 ]
 rust-allocator = []
 std = ["rust-allocator"]
-vpclmulqdq = []
 
 [lib]
 name = "zlib_rs"

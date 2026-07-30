@@ -1,14 +1,7 @@
 use crate::CRC32_INITIAL_VALUE;
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod acle;
 mod braid;
 mod combine;
-#[cfg(target_arch = "x86_64")]
-mod pclmulqdq;
-#[cfg(target_arch = "x86_64")]
-#[cfg(feature = "vpclmulqdq")]
-mod vpclmulqdq;
 
 pub use combine::{crc32_combine, crc32_combine_gen, crc32_combine_op};
 
@@ -34,8 +27,6 @@ pub fn get_crc_table() -> &'static [u32; 256] {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Crc32Fold {
-    #[cfg(target_arch = "x86_64")]
-    fold: pclmulqdq::Accumulator,
     value: u32,
 }
 
@@ -51,45 +42,21 @@ impl Crc32Fold {
     }
 
     pub const fn new_with_initial(initial: u32) -> Self {
-        Self {
-            #[cfg(target_arch = "x86_64")]
-            fold: pclmulqdq::Accumulator::new(),
-            value: initial,
-        }
+        Self { value: initial }
     }
 
     pub fn fold(&mut self, src: &[u8], _start: u32) {
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_pclmulqdq() {
-            return unsafe { self.fold.fold(src, _start) };
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if crate::cpu_features::is_enabled_crc() {
-            self.value = unsafe { self::acle::crc32_acle_aarch64(self.value, src) };
-            return;
-        }
-
-        // in this case the start value is ignored
+        // The state already contains the checksum of all preceding input, so the
+        // explicit start value is only needed by the removed vector backends.
         self.value = braid::crc32_braid::<5>(self.value, src);
     }
 
     pub fn fold_copy(&mut self, dst: &mut [u8], src: &[u8]) {
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_pclmulqdq() {
-            return unsafe { self.fold.fold_copy(dst, src) };
-        }
-
         self.fold(src, 0);
         dst[..src.len()].copy_from_slice(src);
     }
 
     pub fn finish(self) -> u32 {
-        #[cfg(target_arch = "x86_64")]
-        if crate::cpu_features::is_enabled_pclmulqdq() {
-            return unsafe { self.fold.finish() };
-        }
-
         self.value
     }
 }
@@ -113,7 +80,6 @@ mod test {
 
     #[test]
     fn test_crc32_fold() {
-        // input large enough to trigger the SIMD
         let mut h = crc32fast::Hasher::new_with_initial(CRC32_INITIAL_VALUE);
         h.update(&INPUT);
         assert_eq!(crc32(CRC32_INITIAL_VALUE, &INPUT), h.finalize());
@@ -121,7 +87,6 @@ mod test {
 
     #[test]
     fn test_crc32_fold_align() {
-        // SIMD algorithm is sensitive to alignment;
         for i in 0..16 {
             for start in [CRC32_INITIAL_VALUE, 42] {
                 let mut h = crc32fast::Hasher::new_with_initial(start);

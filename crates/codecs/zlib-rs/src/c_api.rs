@@ -3,6 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_uchar, c_uint, c_ulong, c_void};
 
+#[cfg(any(feature = "c-allocator", feature = "rust-allocator"))]
 use crate::allocate::Allocator;
 
 pub type alloc_func = unsafe extern "C" fn(voidpf, uInt, uInt) -> voidpf;
@@ -72,6 +73,7 @@ pub struct z_stream {
 pub type z_streamp = *mut z_stream;
 
 impl Default for z_stream {
+    #[allow(unused_mut)]
     fn default() -> Self {
         let mut stream = Self {
             next_in: core::ptr::null_mut(),
@@ -105,6 +107,7 @@ impl Default for z_stream {
 }
 
 impl z_stream {
+    #[cfg(any(feature = "c-allocator", feature = "rust-allocator"))]
     fn configure_allocator(&mut self, alloc: Allocator) {
         self.zalloc = Some(alloc.zalloc);
         self.zfree = Some(alloc.zfree);

@@ -2,13 +2,9 @@
 
 #[cfg(unix)]
 use core::ffi::c_int;
-use core::{
-    alloc::Layout,
-    ffi::{c_uint, c_void},
-    marker::PhantomData,
-    mem,
-    ptr::NonNull,
-};
+#[cfg(any(feature = "c-allocator", feature = "rust-allocator"))]
+use core::ffi::c_uint;
+use core::{alloc::Layout, ffi::c_void, marker::PhantomData, mem, ptr::NonNull};
 
 #[allow(non_camel_case_types)]
 #[cfg(feature = "c-allocator")]
