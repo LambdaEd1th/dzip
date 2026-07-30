@@ -160,5 +160,5 @@ crates.io builds use the same codec releases.
 
 ## License
 
-This repository is distributed under AGPL-3.0-only. Consumers embedding the
+This repository is distributed under AGPL-3.0-or-later. Consumers embedding the
 library should review the license terms and the codec-specific license files.
