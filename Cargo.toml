@@ -1,15 +1,24 @@
 [workspace]
-members = ["core", "cli"]
+members = [
+    "crates/dzip",
+    "crates/dzip-cli",
+    "crates/codecs/bzip-rs",
+    "crates/codecs/dz-rs",
+    "crates/codecs/lzma-rs",
+    "crates/codecs/zlib-rs",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
+rust-version = "1.85"
 repository = "https://github.com/LambdaEd1th/dzip-rs"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 log = "0.4"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 lto = true

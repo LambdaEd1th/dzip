@@ -1,0 +1,171 @@
+//! Unified Dzip chunk codec dispatch.
+//!
+//! Codec engines live in independent crates. This façade owns archive framing,
+//! chunk-flag interpretation, output-size validation, feature gating, and
+//! conversion into the public error model.
+
+#[cfg(feature = "bzip")]
+mod bzip;
+pub mod dz;
+mod error;
+mod flags;
+#[cfg(feature = "lzma")]
+mod lzma;
+#[cfg(feature = "zlib")]
+mod zlib;
+
+pub use dz::{DzDecodeContext, DzOptions};
+pub use error::CodecError;
+pub use flags::{ChunkEncoding, Codec, Compression, ContentHint, ParseCompressionError};
+
+use crate::{RangeSettings, Result};
+
+pub struct DecodeContext<'a> {
+    pub expected_len: usize,
+    pub dz: Option<&'a DzDecodeContext>,
+}
+
+pub fn encode(
+    compression: Compression,
+    input: &[u8],
+    _dz_settings: RangeSettings,
+) -> Result<Vec<u8>> {
+    match compression {
+        Compression::Copy => Ok(input.to_vec()),
+        Compression::Zero => Ok(Vec::new()),
+        Compression::Dz => {
+            #[cfg(feature = "dz")]
+            {
+                dz::encode(input, _dz_settings)
+            }
+            #[cfg(not(feature = "dz"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Dz }.into())
+            }
+        }
+        Compression::Bzip => {
+            #[cfg(feature = "bzip")]
+            {
+                bzip::encode(input)
+            }
+            #[cfg(not(feature = "bzip"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Bzip }.into())
+            }
+        }
+        Compression::Zlib => {
+            #[cfg(feature = "zlib")]
+            {
+                zlib::encode(input)
+            }
+            #[cfg(not(feature = "zlib"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Zlib }.into())
+            }
+        }
+        Compression::Lzma => {
+            #[cfg(feature = "lzma")]
+            {
+                lzma::encode(input)
+            }
+            #[cfg(not(feature = "lzma"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Lzma }.into())
+            }
+        }
+    }
+}
+
+pub fn decode(
+    encoding: ChunkEncoding,
+    input: &[u8],
+    context: DecodeContext<'_>,
+) -> Result<Vec<u8>> {
+    match encoding.compression {
+        Compression::Copy => Ok(input.to_vec()),
+        Compression::Zero => Ok(vec![0; context.expected_len]),
+        Compression::Dz => {
+            #[cfg(feature = "dz")]
+            {
+                let dz_context = context
+                    .dz
+                    .ok_or(CodecError::MissingContext { codec: Codec::Dz })?;
+                dz::decode(input, context.expected_len, dz_context)
+            }
+            #[cfg(not(feature = "dz"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Dz }.into())
+            }
+        }
+        Compression::Bzip => {
+            #[cfg(feature = "bzip")]
+            {
+                bzip::decode(input, context.expected_len)
+            }
+            #[cfg(not(feature = "bzip"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Bzip }.into())
+            }
+        }
+        Compression::Zlib => {
+            #[cfg(feature = "zlib")]
+            {
+                zlib::decode(input, context.expected_len)
+            }
+            #[cfg(not(feature = "zlib"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Zlib }.into())
+            }
+        }
+        Compression::Lzma => {
+            #[cfg(feature = "lzma")]
+            {
+                lzma::decode(input, context.expected_len)
+            }
+            #[cfg(not(feature = "lzma"))]
+            {
+                Err(CodecError::Unavailable { codec: Codec::Lzma }.into())
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "encode"))]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_codec_features_report_unavailable() {
+        let settings = RangeSettings::default();
+
+        #[cfg(not(feature = "bzip"))]
+        assert!(matches!(
+            encode(Compression::Bzip, b"data", settings),
+            Err(crate::DzipError::Codec(CodecError::Unavailable {
+                codec: Codec::Bzip
+            }))
+        ));
+        #[cfg(not(feature = "dz"))]
+        assert!(matches!(
+            encode(Compression::Dz, b"data", settings),
+            Err(crate::DzipError::Codec(CodecError::Unavailable {
+                codec: Codec::Dz
+            }))
+        ));
+        #[cfg(not(feature = "lzma"))]
+        assert!(matches!(
+            encode(Compression::Lzma, b"data", settings),
+            Err(crate::DzipError::Codec(CodecError::Unavailable {
+                codec: Codec::Lzma
+            }))
+        ));
+        #[cfg(not(feature = "zlib"))]
+        assert!(matches!(
+            encode(Compression::Zlib, b"data", settings),
+            Err(crate::DzipError::Codec(CodecError::Unavailable {
+                codec: Codec::Zlib
+            }))
+        ));
+        let _ = settings;
+    }
+}

@@ -29,10 +29,64 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint with Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy -p dzip -p dzip-cli -p dz-rs -p lzma-rs --all-targets --no-deps -- -D warnings
+
+      - name: Lint public library features
+        run: cargo clippy -p dzip --all-targets --all-features --no-deps -- -D warnings
 
       - name: Build
         run: cargo build --workspace --verbose
 
       - name: Run Tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --all-features --verbose
+
+      - name: Check library feature boundaries
+        run: |
+          cargo check -p dzip --no-default-features
+          cargo check -p dzip --no-default-features --features decode
+          cargo check -p dzip --no-default-features --features encode
+          cargo check -p dzip --all-features
+          cargo test -p dzip --no-default-features --features encode --lib
+
+      - name: Check Rust 1.85 MSRV
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          cargo +1.85.0 check --workspace
+
+      - name: Check documentation
+        run: cargo test -p dzip --all-features --doc
+
+  portable-zlib:
+    name: zlib-rs (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: wasm32-wasip1
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Check portable zlib backend
+        run: |
+          cargo check -p zlib-rs --all-features --target ${{ matrix.target }}
+          cargo check -p zlib-rs --no-default-features --target ${{ matrix.target }}
