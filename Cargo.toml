@@ -17,8 +17,8 @@ repository = "https://github.com/LambdaEd1th/dzip-rs"
 license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
-log = "0.4"
-serde = { version = "1", features = ["derive"] }
+log = "0.4.33"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [profile.release]
 lto = true

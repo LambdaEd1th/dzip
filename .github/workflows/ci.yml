@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -23,7 +23,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@v2.9.1
 
       - name: Check Formatting
         run: cargo fmt --all -- --check
@@ -79,7 +79,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
