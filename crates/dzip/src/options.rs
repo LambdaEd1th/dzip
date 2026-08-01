@@ -89,8 +89,9 @@ pub struct EntryOptions {
     /// Exact on-disk flags to write for this entry.
     ///
     /// This is primarily intended for compatibility frontends that need to
-    /// preserve Dzip 1.1.3's combined `.dcl` flags. The selected
-    /// [`Self::compression`] still determines which encoder is invoked.
+    /// preserve Dzip 1.1.3's combined `.dcl` flags. When present, these flags
+    /// also select the encoder using the original packer registration order;
+    /// [`Self::compression`] is ignored.
     pub raw_flags: Option<u16>,
 }
 

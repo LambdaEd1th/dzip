@@ -6,7 +6,7 @@
 
 use super::{Codec, CodecError};
 use crate::Result;
-use lzma_rs::{LzmaProps, decode_raw, decoder_props, encode_with_end_marker};
+use lzma::{LzmaProps, decode_raw, decoder_props, encode_with_end_marker};
 
 pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
     let properties = LzmaProps {

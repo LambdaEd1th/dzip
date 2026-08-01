@@ -20,7 +20,7 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| codec_error("compressed-size bound exceeds 32-bit limit"))?;
     let mut output = vec![0; capacity];
 
-    let output_length = bzip_rs::compress_buffer(input, &mut output, 1, 0, 30)
+    let output_length = bzip::compress_buffer(input, &mut output, 1, 0, 30)
         .map_err(|code| codec_error(&format!("compression failed with code {code}")))?;
     output.truncate(output_length);
     Ok(output)
@@ -38,7 +38,7 @@ pub(crate) fn decode(input: &[u8], expected_length: usize) -> Result<Vec<u8>> {
         .map_err(|_| codec_error("decompressed-size bound exceeds 32-bit limit"))?;
     let mut output = vec![0; capacity];
 
-    let written = bzip_rs::decompress_buffer(input, &mut output, 0, 0)
+    let written = bzip::decompress_buffer(input, &mut output, 0, 0)
         .map_err(|code| codec_error(&format!("decompression failed with code {code}")))?;
     if written != expected_length {
         return Err(CodecError::LengthMismatch {

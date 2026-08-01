@@ -20,19 +20,24 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2.9.1
 
+      - name: Install Dioxus desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            lld
+
       - name: Check Formatting
         run: cargo fmt --all -- --check
-
-      - name: Lint with Clippy
-        run: cargo clippy -p dzip -p dzip-cli -p dz-rs -p lzma-rs --all-targets --no-deps -- -D warnings
-
-      - name: Lint public library features
-        run: cargo clippy -p dzip --all-targets --all-features --no-deps -- -D warnings
 
       - name: Build
         run: cargo build --workspace --verbose
@@ -48,34 +53,33 @@ jobs:
           cargo check -p dzip --all-features
           cargo test -p dzip --no-default-features --features encode --lib
 
-      - name: Check Rust 1.85 MSRV
-        run: |
-          rustup toolchain install 1.85.0 --profile minimal
-          cargo +1.85.0 check --workspace
-
       - name: Check documentation
         run: cargo test -p dzip --all-features --doc
 
-  portable-zlib:
-    name: zlib-rs (${{ matrix.target }})
+  strict-clippy:
+    name: Clippy (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+            scope: native
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: wasm32-wasip1
+            scope: native
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            scope: native
           - os: windows-latest
             target: aarch64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
+            scope: native
           - os: macos-latest
             target: aarch64-apple-darwin
+            scope: native
+          - os: ubuntu-latest
+            target: wasm32-unknown-unknown
+            scope: wasm
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -84,9 +88,55 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: ${{ matrix.target }}
 
-      - name: Check portable zlib backend
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2.9.1
+        with:
+          key: clippy-${{ matrix.target }}
+
+      - name: Install Dioxus desktop dependencies
+        if: runner.os == 'Linux' && matrix.scope == 'native'
+        shell: bash
         run: |
-          cargo check -p zlib-rs --all-features --target ${{ matrix.target }}
-          cargo check -p zlib-rs --no-default-features --target ${{ matrix.target }}
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            lld
+
+      - name: Strict Clippy for native workspace
+        if: matrix.scope == 'native'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --workspace --all-targets --all-features \
+            --target ${{ matrix.target }} --no-deps -- -D warnings
+
+      - name: Strict Clippy for WASM workspace
+        if: matrix.scope == 'wasm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p dzip -p dzip-cli -p dzip-gui -p dz -p lzma -p zlib \
+            --all-targets --all-features --target ${{ matrix.target }} \
+            --no-deps -- -D warnings
+          cargo clippy -p bzip --target ${{ matrix.target }} \
+            --no-deps -- -D warnings
+
+      - name: Strict Clippy for feature boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p dzip --no-default-features \
+            --target ${{ matrix.target }} --no-deps -- -D warnings
+          cargo clippy -p dzip --no-default-features --features decode \
+            --target ${{ matrix.target }} --no-deps -- -D warnings
+          cargo clippy -p dzip --no-default-features --features encode \
+            --target ${{ matrix.target }} --no-deps -- -D warnings
+          cargo clippy -p zlib --no-default-features \
+            --target ${{ matrix.target }} --no-deps -- -D warnings

@@ -2,17 +2,17 @@
 members = [
     "crates/dzip",
     "crates/dzip-cli",
-    "crates/codecs/bzip-rs",
-    "crates/codecs/dz-rs",
-    "crates/codecs/lzma-rs",
-    "crates/codecs/zlib-rs",
+    "crates/dzip-gui",
+    "crates/codecs/bzip",
+    "crates/codecs/dz",
+    "crates/codecs/lzma",
+    "crates/codecs/zlib",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.4.0"
 edition = "2024"
-rust-version = "1.85"
 repository = "https://github.com/LambdaEd1th/dzip-rs"
 license = "AGPL-3.0-or-later"
 

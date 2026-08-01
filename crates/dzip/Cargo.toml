@@ -2,7 +2,6 @@
 name = "dzip"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 description = "Pure Rust library for reading, extracting, creating, and inspecting Dzip archives"
@@ -12,22 +11,22 @@ categories = ["compression", "encoding"]
 
 [dependencies]
 byteorder = "1.5.0"
-bzip-rs = { version = "0.103.0", path = "../codecs/bzip-rs", default-features = false, features = ["std"], optional = true }
-dz-rs = { version = "0.4.0", path = "../codecs/dz-rs", optional = true }
-lzma-rs = { version = "0.920.0", path = "../codecs/lzma-rs", features = ["decode"], optional = true }
+bzip = { version = "0.103.0", path = "../codecs/bzip", default-features = false, features = ["std"], optional = true }
+dz = { version = "0.4.0", path = "../codecs/dz", optional = true }
+lzma = { version = "0.920.0", path = "../codecs/lzma", features = ["decode"], optional = true }
 rayon = { version = "1.12.0", optional = true }
 serde = { workspace = true, optional = true }
-zlib-rs = { version = "0.113.0", path = "../codecs/zlib-rs", default-features = false, features = ["std"], optional = true }
+zlib = { version = "0.113.0", path = "../codecs/zlib", default-features = false, features = ["std"], optional = true }
 
 [features]
 default = ["encode", "decode", "all-codecs"]
 encode = []
 decode = []
 all-codecs = ["bzip", "dz", "lzma", "zlib"]
-bzip = ["dep:bzip-rs"]
-dz = ["dep:dz-rs"]
-lzma = ["dep:lzma-rs"]
-zlib = ["dep:zlib-rs"]
+bzip = ["dep:bzip"]
+dz = ["dep:dz"]
+lzma = ["dep:lzma"]
+zlib = ["dep:zlib"]
 parallel = ["dep:rayon"]
 serde = ["dep:serde"]
 

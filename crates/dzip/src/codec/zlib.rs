@@ -1,6 +1,6 @@
 use super::{Codec, CodecError};
 use crate::Result;
-use zlib_rs::{Deflate, DeflateFlush, Inflate, InflateFlush, Status};
+use zlib::{Deflate, DeflateFlush, Inflate, InflateFlush, Status};
 
 const GZIP_HEADER: [u8; 10] = [
     0x1f, 0x8b, 8, 0, // magic, deflate, no optional fields

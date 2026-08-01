@@ -1,0 +1,10 @@
+[package]
+name = "dz"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Pure Rust implementation of the native Dzip range/LZ codec"
+
+[lib]
+path = "src/lib.rs"

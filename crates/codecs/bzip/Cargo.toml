@@ -1,0 +1,36 @@
+[package]
+edition = "2024"
+name = "bzip"
+version = "0.103.0"
+description = "Vendored pure Rust bzip2 implementation for dzip compatibility"
+homepage = "https://github.com/trifectatechfoundation/libbzip2-rs"
+readme = "README.md"
+license = "bzip2-1.0.6"
+repository = "https://github.com/LambdaEd1th/dzip-rs"
+
+[features]
+__internal-fuzz-disable-checksum = []
+c-allocator = ["dep:libc"]
+custom-prefix = ["export-symbols"]
+default = [
+    "std",
+]
+export-symbols = []
+rust-allocator = []
+semver-prefix = ["export-symbols"]
+std = ["rust-allocator"]
+stdio = ["dep:libc"]
+testing-prefix = ["export-symbols"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies.libc]
+version = "0.2.189"
+optional = true
+
+# Preserve the structure of the mechanically translated libbzip2 routines.
+[lints.clippy]
+collapsible_if = "allow"
+explicit_counter_loop = "allow"
+unnecessary_cast = "allow"

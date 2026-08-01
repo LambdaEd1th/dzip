@@ -4,7 +4,8 @@
 
 Pure-Rust support for reading, extracting, creating, and inspecting Dzip
 archives. The workspace contains the reusable `dzip` library and the
-`dzip-cli` command-line application.
+`dzip-cli` command-line application, plus a Dioxus GUI for browsers and
+desktop systems.
 
 The implementation is compatible with Dzip 1.1.3, including split volumes,
 native DZ compression and COMBUF references, Bzip, LZMA SDK 9.20 output, and
@@ -126,6 +127,29 @@ blocks, and repeatable `-c`/`--command` overrides. Compatibility parsing keeps
 the original case-insensitive and permissive numeric behavior; unsafe archive
 entry traversal and recursive include cycles are still rejected.
 
+## GUI
+
+The `dzip-gui` package uses one shared Dioxus 0.7 interface. Web builds enable
+the Dioxus `web` renderer, while Windows, macOS, and Linux builds enable the
+`desktop` renderer. File selection, archive inspection, verification,
+extraction, and creation all run locally through the in-memory `dzip` API.
+
+Run the desktop application:
+
+```bash
+dx serve --platform desktop --package dzip-gui
+```
+
+Run the web application:
+
+```bash
+dx serve --platform web --package dzip-gui
+```
+
+Pushes to `main` or `master` publish the web bundle to GitHub Pages. The
+configured project URL is `https://lambdaed1th.github.io/dzip-rs/`; Pages must
+use **GitHub Actions** as its source in the repository settings.
+
 ## Workspace
 
 ```text
@@ -138,11 +162,12 @@ crates/
 │       ├── codec/        Unified codec and chunk-flag façade
 │       └── format/       On-disk structures and constants
 ├── dzip-cli/             CLI and manifest adapter
+├── dzip-gui/             Dioxus web and desktop application
 └── codecs/
-    ├── bzip-rs/          Pure-Rust Bzip engine
-    ├── lzma-rs/          LZMA SDK 9.20-compatible engine
-    ├── zlib-rs/          zlib 1.1.3-compatible DEFLATE engine
-    └── dz-rs/            Native DZ/COMBUF engine
+    ├── bzip/             Pure-Rust Bzip engine
+    ├── lzma/             LZMA SDK 9.20-compatible engine
+    ├── zlib/             zlib 1.1.3-compatible DEFLATE engine
+    └── dz/               Native DZ/COMBUF engine
 ```
 
 The project uses Rust 2024 and has an MSRV of Rust 1.85.
@@ -151,7 +176,7 @@ The project uses Rust 2024 and has an MSRV of Rust 1.85.
 
 The crates.io publication order is:
 
-1. `bzip-rs`, `lzma-rs`, `zlib-rs`, and `dz-rs`
+1. `bzip`, `lzma`, `zlib`, and `dz`
 2. `dzip`
 3. `dzip-cli`
 

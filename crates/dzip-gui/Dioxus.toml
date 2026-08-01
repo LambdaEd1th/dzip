@@ -1,0 +1,7 @@
+[application]
+name = "dzip-gui"
+default_platform = "web"
+
+[web.app]
+title = "Dzip"
+base_path = "dzip-rs"

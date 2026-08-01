@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
-use dzip::Compression;
 use dzip::format::{
     CHUNK_BZIP, CHUNK_COMBUF, CHUNK_COPYCOMP, CHUNK_DZ, CHUNK_JPEG, CHUNK_LZMA, CHUNK_MP3,
     CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB,
 };
+use dzip::{ChunkEncoding, Compression};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -395,23 +395,9 @@ fn set_dcl_option(options: &mut GlobalOptions, key: &str, value: &str) {
 }
 
 fn dcl_compression(flags: u16) -> Option<Compression> {
-    // This is the Dzip 1.1.3 packer registration order, not the decoder's
-    // normalization order. Combined flags select the first registered coder.
-    if flags & CHUNK_ZERO != 0 {
-        Some(Compression::Zero)
-    } else if flags & CHUNK_BZIP != 0 {
-        Some(Compression::Bzip)
-    } else if flags & CHUNK_COPYCOMP != 0 {
-        Some(Compression::Copy)
-    } else if flags & CHUNK_ZLIB != 0 {
-        Some(Compression::Zlib)
-    } else if flags & CHUNK_LZMA != 0 {
-        Some(Compression::Lzma)
-    } else if flags & CHUNK_DZ != 0 {
-        Some(Compression::Dz)
-    } else {
-        None
-    }
+    ChunkEncoding::from_flags(flags)
+        .ok()
+        .map(|encoding| encoding.compression)
 }
 
 fn atoi_compat(value: &str) -> i32 {

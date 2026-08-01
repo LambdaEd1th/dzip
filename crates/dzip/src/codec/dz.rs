@@ -5,7 +5,7 @@ use super::{Codec, CodecError};
 use crate::{RangeSettings, Result};
 
 #[cfg(feature = "dz")]
-pub use dz_rs::DzCommonBuffer;
+pub use dz::DzCommonBuffer;
 
 /// Archive-wide native-DZ encoder and COMBUF analysis settings.
 #[derive(Debug, Clone)]
@@ -83,7 +83,7 @@ pub(crate) struct EncodedDzArchive {
 
 #[cfg(feature = "dz")]
 pub(crate) fn encode(input: &[u8], settings: RangeSettings) -> Result<Vec<u8>> {
-    dz_rs::compress_chunk(input, settings.into()).map_err(Into::into)
+    dz::compress_chunk(input, settings.into()).map_err(Into::into)
 }
 
 #[cfg(feature = "dz")]
@@ -92,7 +92,7 @@ pub(crate) fn decode(
     expected_length: usize,
     context: &DzDecodeContext,
 ) -> Result<Vec<u8>> {
-    dz_rs::decompress_chunk_with_common_buffer(
+    dz::decompress_chunk_with_common_buffer(
         input,
         expected_length,
         context.settings.into(),
@@ -105,7 +105,7 @@ pub(crate) fn decode(
 pub(crate) fn encode_archive(inputs: &[Vec<u8>], options: &DzOptions) -> Result<EncodedDzArchive> {
     #[cfg(feature = "dz")]
     {
-        let encoded = dz_rs::compress_archive(inputs, &options.to_engine())?;
+        let encoded = dz::compress_archive(inputs, &options.to_engine())?;
         Ok(EncodedDzArchive {
             chunks: encoded.chunks,
             common_buffer: encoded.common_buffer,
@@ -120,8 +120,8 @@ pub(crate) fn encode_archive(inputs: &[Vec<u8>], options: &DzOptions) -> Result<
 
 #[cfg(all(feature = "dz", feature = "encode"))]
 impl DzOptions {
-    fn to_engine(&self) -> dz_rs::DzEncoderOptions {
-        dz_rs::DzEncoderOptions {
+    fn to_engine(&self) -> dz::DzEncoderOptions {
+        dz::DzEncoderOptions {
             settings: self.settings.into(),
             max_mem_usage: self.max_mem_usage,
             use_combuf: self.use_combuf,
@@ -133,7 +133,7 @@ impl DzOptions {
 }
 
 #[cfg(feature = "dz")]
-impl From<RangeSettings> for dz_rs::RangeSettings {
+impl From<RangeSettings> for dz::RangeSettings {
     fn from(settings: RangeSettings) -> Self {
         Self {
             win_size: settings.win_size,
