@@ -1,6 +1,6 @@
 #![allow(unpredictable_function_pointer_comparisons)]
 
-#[cfg(unix)]
+#[cfg(all(feature = "c-allocator", unix))]
 use core::ffi::c_int;
 #[cfg(any(feature = "c-allocator", feature = "rust-allocator"))]
 use core::ffi::c_uint;
