@@ -1,0 +1,18 @@
+[application]
+name = "dzip-gui"
+default_platform = "desktop"
+
+[web.app]
+title = "Dzip Archive"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "assets"]
+
+[bundle]
+identifier = "dev.lambdaedith.dzip"
+publisher = "LambdaEd1th"
+icon = []
+category = "Utility"
+short_description = "A modern Dzip archive manager"
+long_description = "Open, inspect, extract, and create Dzip archives from one cross-platform interface."

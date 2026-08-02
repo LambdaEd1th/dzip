@@ -1,0 +1,52 @@
+[package]
+name = "dzip-gui"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors = ["LambdaEd1th"]
+description = "Cross-platform Dioxus archive manager for Dzip files"
+
+[package.metadata.bundle]
+name = "Dzip Archive"
+identifier = "dev.lambdaedith.dzip"
+category = "public.app-category.utilities"
+short_description = "A modern Dzip archive manager"
+long_description = "Open, inspect, extract, and create Dzip archives from one cross-platform interface."
+
+[package.metadata.bundle.bin.dzip-gui]
+name = "Dzip Archive"
+identifier = "dev.lambdaedith.dzip"
+category = "public.app-category.utilities"
+short_description = "A modern Dzip archive manager"
+long_description = "Open, inspect, extract, and create Dzip archives from one cross-platform interface."
+
+[[bin]]
+name = "dzip-gui"
+path = "src/main.rs"
+
+[dependencies]
+dioxus = { version = "0.7.10", default-features = false, features = ["asset", "document", "hooks", "html", "launch", "logger", "macro", "signals", "warnings"] }
+dzip = { version = "0.4.0", path = "../dzip" }
+crc32fast = "1.5.0"
+rfd = { version = "0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
+wasm-bindgen = { version = "0.2.105", optional = true }
+js-sys = { version = "0.3.82", optional = true }
+web-sys = { version = "0.3.82", optional = true, features = [
+    "Blob",
+    "CssStyleDeclaration",
+    "Document",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "Location",
+    "Navigator",
+    "Storage",
+    "Url",
+    "Window",
+] }
+
+[features]
+default = ["desktop"]
+bundle = []
+desktop = ["dioxus/desktop", "dzip/parallel", "dep:rfd"]
+web = ["dioxus/web", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]

@@ -126,6 +126,34 @@ blocks, and repeatable `-c`/`--command` overrides. Compatibility parsing keeps
 the original case-insensitive and permissive numeric behavior; unsafe archive
 entry traversal and recursive include cycles are still rejected.
 
+## GUI
+
+`dzip-gui` is a Dioxus archive manager that shares one responsive interface
+between native desktop builds and the browser. It can open and inspect archives,
+search and select entries, extract files, and create new archives with DZ, Zlib,
+Bzip, LZMA, copy, or zero-fill encoding.
+
+Install the Dioxus CLI, then start the desktop app:
+
+```bash
+cargo install dioxus-cli --version 0.7.10 --locked
+cd crates/dzip-gui
+dx serve --desktop
+```
+
+Start the WebAssembly version:
+
+```bash
+cd crates/dzip-gui
+dx serve --web
+```
+
+The desktop build saves archives with the native file dialog and extracts to a
+chosen directory. The web build processes files entirely in WebAssembly,
+downloads created `.dz` archives directly, and bundles extracted entries into a
+browser-friendly ZIP download. Select the main `.dz` file and its auxiliary
+volumes together when opening a split archive.
+
 ## Workspace
 
 ```text
@@ -138,6 +166,7 @@ crates/
 │       ├── codec/        Unified codec and chunk-flag façade
 │       └── format/       On-disk structures and constants
 ├── dzip-cli/             CLI and manifest adapter
+├── dzip-gui/             Dioxus desktop and WebAssembly archive manager
 └── codecs/
     ├── bzip/             Pure-Rust Bzip engine
     ├── lzma/             LZMA SDK 9.20-compatible engine
