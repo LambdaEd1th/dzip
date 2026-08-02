@@ -5,7 +5,7 @@ pub enum Compatibility {
     Strict,
     /// Reproduce writer quirks and repair known Dzip 1.1.3 length fields.
     #[default]
-    Dzip113,
+    Dzip,
 }
 
 #[cfg(feature = "decode")]
@@ -73,7 +73,7 @@ impl Default for PackOptions {
         Self {
             volume_names: vec!["archive.dz".to_string()],
             alignment: 0,
-            compatibility: Compatibility::Dzip113,
+            compatibility: Compatibility::Dzip,
             dz: crate::codec::DzOptions::default(),
         }
     }

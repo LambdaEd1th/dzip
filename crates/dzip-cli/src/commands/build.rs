@@ -72,7 +72,7 @@ fn archive_builder(config: config::DzipConfig) -> Result<ArchiveBuilder> {
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: config.archives,
         alignment: config.align.unwrap_or(0),
-        compatibility: dzip::Compatibility::Dzip113,
+        compatibility: dzip::Compatibility::Dzip,
         dz: DzOptions {
             settings,
             max_mem_usage: dz.max_mem_usage,

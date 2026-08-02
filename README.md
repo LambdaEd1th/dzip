@@ -72,7 +72,7 @@ writer remain available for inspection and reverse-engineering tools.
 
 ### Compatibility and safety
 
-`Compatibility::Dzip113` is the default. It reproduces original writer quirks
+`Compatibility::Dzip` is the default. It reproduces original writer quirks
 and repairs known incorrect physical-length fields while reading.
 `Compatibility::Strict` rejects those malformed fields and unsafe zero-chunk
 requests.

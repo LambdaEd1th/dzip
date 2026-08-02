@@ -87,7 +87,7 @@ pub fn create_archive(request: CreateRequest<'_>) -> Result<()> {
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: vec![request.archive.to_string()],
         alignment: request.alignment,
-        compatibility: dzip::Compatibility::Dzip113,
+        compatibility: dzip::Compatibility::Dzip,
         dz: DzOptions {
             use_combuf: request.use_combuf,
             ..DzOptions::default()

@@ -495,7 +495,7 @@ fn write_chunk<S: VolumeSink>(
     let offset = u32::try_from(offset_u64)
         .map_err(|_| invalid_input("chunk offset exceeds the 32-bit format field"))?;
     writer.write_all(&entry.compressed)?;
-    let compressed_length = if options.compatibility == crate::Compatibility::Dzip113
+    let compressed_length = if options.compatibility == crate::Compatibility::Dzip
         && entry.flags & (CHUNK_ZLIB | CHUNK_BZIP | CHUNK_LZMA) != 0
     {
         entry.original_len

@@ -160,7 +160,7 @@ pub fn build_archive(
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: vec![normalise_archive_name(archive_name)],
         alignment,
-        compatibility: dzip::Compatibility::Dzip113,
+        compatibility: dzip::Compatibility::Dzip,
         dz: DzOptions {
             settings,
             max_mem_usage: dz_options.max_mem_usage,
