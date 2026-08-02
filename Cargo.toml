@@ -2,7 +2,6 @@
 members = [
     "crates/dzip",
     "crates/dzip-cli",
-    "crates/dzip-gui",
     "crates/codecs/bzip",
     "crates/codecs/dz",
     "crates/codecs/lzma",

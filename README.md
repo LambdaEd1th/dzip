@@ -4,8 +4,7 @@
 
 Pure-Rust support for reading, extracting, creating, and inspecting Dzip
 archives. The workspace contains the reusable `dzip` library and the
-`dzip-cli` command-line application, plus a Dioxus GUI for browsers and
-desktop systems.
+`dzip-cli` command-line application.
 
 The implementation is compatible with Dzip 1.1.3, including split volumes,
 native DZ compression and COMBUF references, Bzip, LZMA SDK 9.20 output, and
@@ -127,29 +126,6 @@ blocks, and repeatable `-c`/`--command` overrides. Compatibility parsing keeps
 the original case-insensitive and permissive numeric behavior; unsafe archive
 entry traversal and recursive include cycles are still rejected.
 
-## GUI
-
-The `dzip-gui` package uses one shared Dioxus 0.7 interface. Web builds enable
-the Dioxus `web` renderer, while Windows, macOS, and Linux builds enable the
-`desktop` renderer. File selection, archive inspection, verification,
-extraction, and creation all run locally through the in-memory `dzip` API.
-
-Run the desktop application:
-
-```bash
-dx serve --platform desktop --package dzip-gui
-```
-
-Run the web application:
-
-```bash
-dx serve --platform web --package dzip-gui
-```
-
-Pushes to `main` or `master` publish the web bundle to GitHub Pages. The
-configured project URL is `https://lambdaed1th.github.io/dzip-rs/`; Pages must
-use **GitHub Actions** as its source in the repository settings.
-
 ## Workspace
 
 ```text
@@ -162,7 +138,6 @@ crates/
 │       ├── codec/        Unified codec and chunk-flag façade
 │       └── format/       On-disk structures and constants
 ├── dzip-cli/             CLI and manifest adapter
-├── dzip-gui/             Dioxus web and desktop application
 └── codecs/
     ├── bzip/             Pure-Rust Bzip engine
     ├── lzma/             LZMA SDK 9.20-compatible engine

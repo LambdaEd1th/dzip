@@ -25,17 +25,6 @@ jobs:
       - name: Rust Cache
         uses: swatinem/rust-cache@v2.9.1
 
-      - name: Install Dioxus desktop dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            lld
-
       - name: Check Formatting
         run: cargo fmt --all -- --check
 
@@ -96,19 +85,6 @@ jobs:
         with:
           key: clippy-${{ matrix.target }}
 
-      - name: Install Dioxus desktop dependencies
-        if: runner.os == 'Linux' && matrix.scope == 'native'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            lld
-
       - name: Strict Clippy for native workspace
         if: matrix.scope == 'native'
         shell: bash
@@ -122,7 +98,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo clippy -p dzip -p dzip-cli -p dzip-gui -p dz -p lzma -p zlib \
+          cargo clippy -p dzip -p dzip-cli -p dz -p lzma -p zlib \
             --all-targets --all-features --target ${{ matrix.target }} \
             --no-deps -- -D warnings
           cargo clippy -p bzip --target ${{ matrix.target }} \
