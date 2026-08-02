@@ -62,9 +62,7 @@ Desktop.ini
 .idea/
 
 # Visual Studio Code
-# Note: It is often useful to commit .vscode/ for shared launch configurations.
-# Uncomment the line below if you wish to ignore workspace settings.
-# .vscode/
+.vscode/
 
 # Vim / Emacs temporary files
 *.swp

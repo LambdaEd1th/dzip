@@ -21,13 +21,13 @@ pub fn build_from_config_with_commands(
     };
     let mut config =
         parsed.map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    if !config.is_legacy_dcl && config.base_dir == Path::new(".") {
-        if let Some(parent) = config_path
+    if !config.is_legacy_dcl
+        && config.base_dir == Path::new(".")
+        && let Some(parent) = config_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            config.base_dir = parent.to_path_buf();
-        }
+    {
+        config.base_dir = parent.to_path_buf();
     }
     write_config(config, Path::new(output_dir))
 }

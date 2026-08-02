@@ -139,10 +139,10 @@ crates/
 │       └── format/       On-disk structures and constants
 ├── dzip-cli/             CLI and manifest adapter
 └── codecs/
-    ├── bzip-rs/          Pure-Rust Bzip engine
-    ├── lzma-rs/          LZMA SDK 9.20-compatible engine
-    ├── zlib-rs/          zlib 1.1.3-compatible DEFLATE engine
-    └── dz-rs/            Native DZ/COMBUF engine
+    ├── bzip/             Pure-Rust Bzip engine
+    ├── lzma/             LZMA SDK 9.20-compatible engine
+    ├── zlib/             zlib 1.1.3-compatible DEFLATE engine
+    └── dz/               Native DZ/COMBUF engine
 ```
 
 The project uses Rust 2024 and has an MSRV of Rust 1.85.
@@ -151,7 +151,7 @@ The project uses Rust 2024 and has an MSRV of Rust 1.85.
 
 The crates.io publication order is:
 
-1. `bzip-rs`, `lzma-rs`, `zlib-rs`, and `dz-rs`
+1. `bzip`, `lzma`, `zlib`, and `dz`
 2. `dzip`
 3. `dzip-cli`
 

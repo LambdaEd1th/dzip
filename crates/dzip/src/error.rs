@@ -100,8 +100,8 @@ impl From<crate::codec::CodecError> for DzipError {
 }
 
 #[cfg(feature = "dz")]
-impl From<dz_rs::DzError> for DzipError {
-    fn from(error: dz_rs::DzError) -> Self {
+impl From<dz::DzError> for DzipError {
+    fn from(error: dz::DzError) -> Self {
         Self::Codec(crate::codec::CodecError::invalid(
             crate::codec::Codec::Dz,
             error.to_string(),

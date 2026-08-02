@@ -1,3 +1,6 @@
+use dzip::raw::{
+    CHUNK_COPYCOMP, CHUNK_DZ, CHUNK_JPEG, CHUNK_MP3, CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB,
+};
 use dzip::volume::MemoryVolumeSource;
 use dzip::{
     Archive, ArchiveBuilder, Codec, Compatibility, Compression, EntryOptions, ExtractOptions,
@@ -48,6 +51,67 @@ fn public_builder_and_archive_round_trip_all_codecs() {
 }
 
 #[test]
+fn raw_flags_select_the_original_packer_coder() {
+    let fixtures = [
+        (
+            "dz-mp3.bin",
+            CHUNK_DZ | CHUNK_MP3,
+            b"DZ data carrying an MP3 hint".repeat(100),
+        ),
+        (
+            "zlib-jpeg.bin",
+            CHUNK_ZLIB | CHUNK_JPEG | CHUNK_RANDOMACCESS,
+            b"Zlib data carrying JPEG and random-access metadata".repeat(100),
+        ),
+        (
+            "copy-jpeg.bin",
+            CHUNK_COPYCOMP | CHUNK_JPEG | CHUNK_RANDOMACCESS,
+            b"raw copy data".repeat(100),
+        ),
+    ];
+    let mut builder = ArchiveBuilder::new();
+    for (path, flags, data) in &fixtures {
+        builder
+            .add_bytes(
+                path,
+                data.clone(),
+                EntryOptions::new()
+                    .compression(Compression::Copy)
+                    .raw_flags(*flags),
+            )
+            .unwrap();
+    }
+
+    let mut sink = MemoryVolumeSink::default();
+    builder.write_to_sink(&mut sink).unwrap();
+    let main = sink.into_volumes().remove(&0).unwrap();
+    let mut archive =
+        Archive::open_with_volumes(Cursor::new(main), MemoryVolumeSource::new([])).unwrap();
+
+    for (path, _, expected) in fixtures {
+        assert_eq!(archive.read_entry_by_path(path).unwrap(), expected);
+    }
+}
+
+#[test]
+fn metadata_only_raw_flags_do_not_create_copy_chunks() {
+    let mut builder = ArchiveBuilder::new();
+    builder
+        .add_bytes(
+            "hint-only.bin",
+            b"not implicitly copied".to_vec(),
+            EntryOptions::new().raw_flags(CHUNK_MP3 | CHUNK_RANDOMACCESS),
+        )
+        .unwrap();
+
+    assert!(
+        builder
+            .write_to_sink(&mut MemoryVolumeSink::default())
+            .is_err()
+    );
+}
+
+#[test]
 fn split_volumes_and_segmented_entries_use_public_api() {
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: vec!["main.dz".to_string(), "main1.dz".to_string()],
@@ -79,6 +143,57 @@ fn split_volumes_and_segmented_entries_use_public_api() {
         archive.read_entry_by_path("joined.bin").unwrap(),
         b"first second"
     );
+}
+
+#[test]
+fn alignment_applies_once_per_volume_and_zero_uses_the_payload_origin() {
+    let mut builder = ArchiveBuilder::with_options(PackOptions {
+        volume_names: vec!["main.dz".to_string(), "main1.dz".to_string()],
+        alignment: 256,
+        ..PackOptions::default()
+    });
+    builder
+        .add_bytes(
+            "zero.bin",
+            vec![0; 16],
+            EntryOptions::new().compression(Compression::Zero),
+        )
+        .unwrap()
+        .add_bytes(
+            "main.bin",
+            b"main".to_vec(),
+            EntryOptions::new().compression(Compression::Copy),
+        )
+        .unwrap()
+        .add_bytes(
+            "aux.bin",
+            b"abc".to_vec(),
+            EntryOptions::new().compression(Compression::Copy).volume(1),
+        )
+        .unwrap()
+        .add_bytes(
+            "aux-2.bin",
+            b"defg".to_vec(),
+            EntryOptions::new().compression(Compression::Copy).volume(1),
+        )
+        .unwrap();
+
+    let mut sink = MemoryVolumeSink::default();
+    builder.write_to_sink(&mut sink).unwrap();
+    let mut volumes = sink.into_volumes();
+    let main = volumes.remove(&0).unwrap();
+    let auxiliary = volumes.remove(&1).unwrap();
+    let archive =
+        Archive::open_with_volumes(Cursor::new(main), MemoryVolumeSource::new([(1, auxiliary)]))
+            .unwrap();
+    let chunks = archive.index().chunks();
+
+    assert_eq!(chunks[0].flags & CHUNK_ZERO, CHUNK_ZERO);
+    assert_ne!(chunks[0].offset, 0);
+    assert_eq!(chunks[0].offset % 256, 0);
+    assert_eq!(chunks[1].offset, chunks[0].offset);
+    assert_eq!(chunks[2].offset, 0);
+    assert_eq!(chunks[3].offset, 3);
 }
 
 #[test]

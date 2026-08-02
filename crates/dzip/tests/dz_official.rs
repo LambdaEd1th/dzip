@@ -6,12 +6,10 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn decodes_official_dzip_1_1_3_sample() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/sample");
-    let main_path = root.join("testnew.dz");
-    if !main_path.exists() {
-        return;
-    }
+fn decodes_native_dzip_1_1_3_codec_fixture() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/native");
+    let corpus = root.join("corpus");
+    let main_path = root.join("codecs.dz");
 
     let mut metadata_reader = DzipReader::new(File::open(&main_path).unwrap());
     let archive = metadata_reader.read_archive_settings().unwrap();
@@ -52,7 +50,7 @@ fn decodes_official_dzip_1_1_3_sample() {
             }
         }
         archive_path.push(&strings[file_index]);
-        let expected = std::fs::read(root.join(&archive_path)).unwrap();
+        let expected = std::fs::read(corpus.join(&archive_path)).unwrap();
 
         let mut actual = Vec::new();
         for &chunk_id in chunk_ids {
@@ -64,7 +62,7 @@ fn decodes_official_dzip_1_1_3_sample() {
                 .read_chunk_data_with_context(&chunk, &mut volume_manager, Some(&dz_context))
                 .unwrap_or_else(|error| {
                     panic!(
-                        "failed to decode official DZ chunk {} from {}: {}",
+                        "failed to decode native DZ chunk {} from {}: {}",
                         chunk_id,
                         display_path(&archive_path),
                         error

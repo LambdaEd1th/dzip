@@ -1,6 +1,6 @@
 //! High-level deterministic Dzip archive creation.
 
-use crate::codec::{Compression, ContentHint};
+use crate::codec::{ChunkEncoding, Compression, ContentHint};
 use crate::format::*;
 use crate::path::{sanitize_path, to_archive_format};
 use crate::writer::DzipWriter;
@@ -234,8 +234,9 @@ impl ArchiveBuilder {
                     ))
                 })?,
             };
+            let compression = effective_compression(entry.options)?;
             if options.compatibility == crate::Compatibility::Strict
-                && entry.options.compression == Compression::Zero
+                && compression == Compression::Zero
                 && data.iter().any(|byte| *byte != 0)
             {
                 return Err(invalid_input(format!(
@@ -295,6 +296,10 @@ fn write_prepared<S: VolumeSink>(
     options: &PackOptions,
     sink: &mut S,
 ) -> Result<BuildReport> {
+    let compressions = prepared
+        .iter()
+        .map(|entry| effective_compression(entry.options))
+        .collect::<Result<Vec<_>>>()?;
     let (logical_files, segment_to_logical) = group_logical_files(prepared);
     let (all_strings, file_directory_ids, directory_count) = build_string_table(&logical_files)?;
     let file_count = checked_u16(logical_files.len(), "user file count")?;
@@ -307,8 +312,9 @@ fn write_prepared<S: VolumeSink>(
 
     let dz_inputs: Vec<Vec<u8>> = prepared
         .iter()
-        .filter(|entry| entry.options.compression == Compression::Dz)
-        .map(|entry| entry.data.clone())
+        .zip(&compressions)
+        .filter(|(_, compression)| **compression == Compression::Dz)
+        .map(|(entry, _)| entry.data.clone())
         .collect();
     let encoded_dz = if dz_inputs.is_empty() {
         None
@@ -318,7 +324,7 @@ fn write_prepared<S: VolumeSink>(
     let mut next_dz = 0usize;
     let mut processed = Vec::with_capacity(prepared.len());
     for (index, entry) in prepared.iter().enumerate() {
-        let compression = entry.options.compression;
+        let compression = compressions[index];
         let compressed = if compression == Compression::Dz {
             let bytes = encoded_dz
                 .as_ref()
@@ -338,6 +344,7 @@ fn write_prepared<S: VolumeSink>(
             flags |= match entry.options.content_hint {
                 Some(ContentHint::Mp3) => CHUNK_MP3,
                 Some(ContentHint::Jpeg) => CHUNK_JPEG,
+                Some(ContentHint::Mp3AndJpeg) => CHUNK_MP3 | CHUNK_JPEG,
                 None => 0,
             };
             flags
@@ -368,6 +375,13 @@ fn write_prepared<S: VolumeSink>(
     sink.open_volume(0, &options.volume_names[0])?
         .seek(SeekFrom::Start(header_size))?;
 
+    // dzip.exe applies `align` to the beginning of each volume's payload
+    // region. Chunks within that region remain tightly packed.
+    for (id, name) in options.volume_names.iter().enumerate() {
+        let id = checked_u16(id, "archive volume index")?;
+        pad_writer_to_alignment(sink.open_volume(id, name)?, options.alignment)?;
+    }
+
     let mut chunks = vec![
         Chunk {
             offset: 0,
@@ -394,7 +408,6 @@ fn write_prepared<S: VolumeSink>(
 
     if let Some(common) = common_buffer {
         let writer = sink.open_volume(0, &options.volume_names[0])?;
-        pad_writer_to_alignment(writer, options.alignment)?;
         let offset = checked_u32(writer.stream_position()? as usize, "COMBUF offset")?;
         writer.write_all(&common)?;
         chunks.push(Chunk {
@@ -458,6 +471,13 @@ fn write_prepared<S: VolumeSink>(
     })
 }
 
+fn effective_compression(options: EntryOptions) -> Result<Compression> {
+    match options.raw_flags {
+        Some(flags) => Ok(ChunkEncoding::from_flags(flags)?.compression),
+        None => Ok(options.compression),
+    }
+}
+
 fn write_chunk<S: VolumeSink>(
     index: usize,
     processed: &[ProcessedEntry],
@@ -466,22 +486,11 @@ fn write_chunk<S: VolumeSink>(
     sink: &mut S,
 ) -> Result<()> {
     let entry = &processed[index];
-    if entry.flags & CHUNK_ZERO != 0 {
-        chunks[index] = Chunk {
-            offset: 0,
-            compressed_length: 0,
-            decompressed_length: checked_u32(entry.original_len, "chunk decompressed length")?,
-            flags: entry.flags,
-            file: entry.volume,
-        };
-        return Ok(());
-    }
     let name = options
         .volume_names
         .get(entry.volume as usize)
         .ok_or(DzipError::VolumeNotFound(entry.volume))?;
     let writer = sink.open_volume(entry.volume, name)?;
-    pad_writer_to_alignment(writer, options.alignment)?;
     let offset_u64 = writer.stream_position()?;
     let offset = u32::try_from(offset_u64)
         .map_err(|_| invalid_input("chunk offset exceeds the 32-bit format field"))?;
@@ -629,11 +638,11 @@ fn pad_writer_to_alignment(writer: &mut dyn WriteSeek, alignment: u32) -> std::i
 }
 
 fn chunk_write_rank(flags: u16) -> u8 {
-    if flags & CHUNK_BZIP != 0 {
+    if flags & CHUNK_ZERO != 0 {
         0
-    } else if flags & CHUNK_COPYCOMP != 0 {
+    } else if flags & CHUNK_BZIP != 0 {
         1
-    } else if flags & CHUNK_ZERO != 0 {
+    } else if flags & CHUNK_COPYCOMP != 0 {
         2
     } else if flags & CHUNK_ZLIB != 0 {
         3

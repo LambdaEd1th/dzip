@@ -8,11 +8,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn official_sample_repack_round_trip() {
-    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/sample");
-    if !sample.join("DerbhCLI.txt").exists() {
-        return;
-    }
+fn native_fixtures_repack_byte_exact_and_extract() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/native");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -27,33 +24,83 @@ fn official_sample_repack_round_trip() {
     std::fs::create_dir_all(&packed).unwrap();
     std::fs::create_dir_all(&unpacked).unwrap();
 
-    run([
-        "build",
-        sample.join("DerbhCLI.txt").to_str().unwrap(),
-        "--output",
-        packed.to_str().unwrap(),
-    ]);
-    assert_same(&sample.join("testnew.dz"), &packed.join("testnew.dz"));
-    assert_same(&sample.join("testnew1.dz"), &packed.join("testnew1.dz"));
-    run(["list", packed.join("testnew.dz").to_str().unwrap()]);
+    for (dcl, archives) in [
+        ("codecs.dcl", &["codecs.dz", "codecs-1.dz"][..]),
+        (
+            "ranges.dcl",
+            &["ranges.dz", "ranges-1.dz", "ranges-2.dz"][..],
+        ),
+        ("tiny.dcl", &["tiny.dz"][..]),
+    ] {
+        run([
+            "build",
+            fixtures.join(dcl).to_str().unwrap(),
+            "--output",
+            packed.to_str().unwrap(),
+        ]);
+        for archive in archives {
+            assert_same(&fixtures.join(archive), &packed.join(archive));
+        }
+    }
+
+    run(["list", packed.join("codecs.dz").to_str().unwrap()]);
+    let codecs_unpacked = unpacked.join("codecs");
     run([
         "extract",
-        packed.join("testnew.dz").to_str().unwrap(),
+        packed.join("codecs.dz").to_str().unwrap(),
         "--output",
-        unpacked.to_str().unwrap(),
+        codecs_unpacked.to_str().unwrap(),
     ]);
 
     for relative in [
-        "Image16b.bmp",
-        "BMP/Image16.bmp",
-        "BMP/Image4.bmp",
-        "BMP/Image8.bmp",
-        "TXT/Text1.txt",
-        "TXT/Text3.txt",
+        "common/base.bin",
+        "common/variant-1.bin",
+        "common/variant-2.bin",
+        "common/variant-3.bin",
+        "local/random.bin",
+        "local/text.txt",
+        "local/periodic.bin",
+        "local/runs.bin",
+        "local/zero.bin",
     ] {
-        assert_same(&sample.join(relative), &unpacked.join(relative));
+        assert_same(
+            &fixtures.join("corpus").join(relative),
+            &codecs_unpacked.join(relative),
+        );
     }
-    assert!(!unpacked.join("testnew.toml").exists());
+
+    let ranges_unpacked = unpacked.join("ranges");
+    run([
+        "extract",
+        packed.join("ranges.dz").to_str().unwrap(),
+        "--output",
+        ranges_unpacked.to_str().unwrap(),
+    ]);
+    for relative in ["common/base.bin", "common/variant-1.bin"] {
+        assert_same(
+            &fixtures.join("corpus").join(relative),
+            &ranges_unpacked.join(relative),
+        );
+    }
+    let periodic = std::fs::read(fixtures.join("corpus/local/periodic.bin")).unwrap();
+    assert_eq!(
+        std::fs::read(ranges_unpacked.join("local/periodic.bin")).unwrap(),
+        periodic[123..12001]
+    );
+
+    let tiny_unpacked = unpacked.join("tiny");
+    run([
+        "extract",
+        packed.join("tiny.dz").to_str().unwrap(),
+        "--output",
+        tiny_unpacked.to_str().unwrap(),
+    ]);
+    for relative in ["local/empty.bin", "local/one.bin", "local/two.bin"] {
+        assert_same(
+            &fixtures.join("corpus").join(relative),
+            &tiny_unpacked.join(relative),
+        );
+    }
 
     std::fs::remove_dir_all(&root).unwrap();
 }

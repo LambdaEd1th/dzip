@@ -299,7 +299,16 @@ impl<R: Read + Seek> DzipReader<R> {
         }
 
         reader.seek(std::io::SeekFrom::Start(chunk.offset as u64))?;
-        let mut buffer = vec![0u8; chunk.compressed_length as usize];
+        // Dzip 1.1.3's copy decoder tracks the uncompressed byte count and
+        // ignores the stored compressed-length field. Valid copy chunks have
+        // equal lengths, but using the original field preserves compatibility
+        // with malformed legacy headers.
+        let stored_length = if encoding.compression == crate::codec::Compression::Copy {
+            chunk.decompressed_length
+        } else {
+            chunk.compressed_length
+        };
+        let mut buffer = vec![0u8; stored_length as usize];
         reader.read_exact(&mut buffer)?;
 
         crate::codec::decode(
@@ -331,7 +340,7 @@ pub trait VolumeSource {
 
 /// Corrects chunk sizes based on actual file boundaries.
 ///
-/// Some archives (like testnew.dz) have incorrect compressed_length headers (e.g., listing uncompressed size).
+/// Some legacy archives have incorrect compressed-length headers (for example, the uncompressed size).
 /// This function clamps compressed lengths to the available space between chunks or EOF.
 ///
 /// # Arguments
@@ -388,5 +397,25 @@ pub fn correct_chunk_sizes(
                 chunks[idx].compressed_length = available as u32;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn copy_chunks_use_decompressed_length_like_dzip_113() {
+        let mut reader = DzipReader::new(Cursor::new(b"payload".to_vec()));
+        let chunk = Chunk {
+            offset: 0,
+            compressed_length: 1,
+            decompressed_length: 7,
+            flags: CHUNK_COPYCOMP | CHUNK_JPEG | CHUNK_RANDOMACCESS,
+            file: 0,
+        };
+
+        assert_eq!(reader.read_chunk_data(&chunk).unwrap(), b"payload");
     }
 }
