@@ -106,28 +106,6 @@ impl CompressionChoice {
         Self::Zero,
     ];
 
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Dz => "DZ",
-            Self::Zlib => "Zlib",
-            Self::Bzip => "Bzip",
-            Self::Lzma => "LZMA",
-            Self::Copy => "仅存储",
-            Self::Zero => "零填充",
-        }
-    }
-
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Dz => "原生压缩算法",
-            Self::Zlib => "兼容性优先",
-            Self::Bzip => "文本与重复数据",
-            Self::Lzma => "高压缩率",
-            Self::Copy => "不压缩，速度最快",
-            Self::Zero => "仅适用于全零文件",
-        }
-    }
-
     pub fn from_archive_label(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "zlib" => Self::Zlib,

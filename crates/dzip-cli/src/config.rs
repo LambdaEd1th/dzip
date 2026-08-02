@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, bail};
 use dzip::format::{
     CHUNK_BZIP, CHUNK_COMBUF, CHUNK_COPYCOMP, CHUNK_DZ, CHUNK_JPEG, CHUNK_LZMA, CHUNK_MP3,
     CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB,
@@ -6,7 +5,76 @@ use dzip::format::{
 use dzip::{ChunkEncoding, Compression};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
+
+pub type Result<T> = std::result::Result<T, ConfigError>;
+
+#[derive(Debug)]
+pub enum ConfigError {
+    Io {
+        context: Option<String>,
+        source: io::Error,
+    },
+    Toml(toml::de::Error),
+    Invalid(String),
+}
+
+impl ConfigError {
+    fn io(context: impl Into<String>, source: io::Error) -> Self {
+        Self::Io {
+            context: Some(context.into()),
+            source,
+        }
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::Invalid(message.into())
+    }
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io {
+                context: Some(context),
+                source,
+            } => write!(formatter, "{context}: {source}"),
+            Self::Io {
+                context: None,
+                source,
+            } => source.fmt(formatter),
+            Self::Toml(error) => error.fmt(formatter),
+            Self::Invalid(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Toml(error) => Some(error),
+            Self::Invalid(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for ConfigError {
+    fn from(source: io::Error) -> Self {
+        Self::Io {
+            context: None,
+            source,
+        }
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(error: toml::de::Error) -> Self {
+        Self::Toml(error)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DzipConfig {
@@ -56,13 +124,13 @@ impl FileEntry {
             .unwrap_or(total_len);
 
         if start > end {
-            bail!(
+            return Err(ConfigError::invalid(format!(
                 "Invalid file modifiers '{}' for {}: from {} is after to {}",
                 self.modifiers,
                 self.path.display(),
                 start,
                 end
-            );
+            )));
         }
 
         Ok((start.min(total_len), end.min(total_len)))
@@ -98,9 +166,11 @@ impl DclRange {
                 let percent = u64::from(raw.unsigned_abs());
                 let value = (total_len as u128)
                     .checked_mul(u128::from(percent))
-                    .context("DCL percentage range overflow")?
+                    .ok_or_else(|| ConfigError::invalid("DCL percentage range overflow"))?
                     / 100;
-                usize::try_from(value).context("DCL percentage range exceeds platform limits")
+                usize::try_from(value).map_err(|_| {
+                    ConfigError::invalid("DCL percentage range exceeds platform limits")
+                })
             } else {
                 Ok(raw as usize)
             }
@@ -109,13 +179,13 @@ impl DclRange {
         let start = resolve_boundary(self.from)?;
         let end = resolve_boundary(self.to)?;
         if start > end || end > total_len {
-            bail!(
+            return Err(ConfigError::invalid(format!(
                 "DCL byte range {}..{} is outside {} ({} bytes)",
                 start,
                 end,
                 path.display(),
                 total_len
-            );
+            )));
         }
         Ok((start, end))
     }
@@ -252,7 +322,10 @@ impl DclParser<'_> {
 
         let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if !self.include_stack.insert(canonical_path.clone()) {
-            bail!("Recursive master include detected at {}", path.display());
+            return Err(ConfigError::invalid(format!(
+                "Recursive master include detected at {}",
+                path.display()
+            )));
         }
 
         let bytes = match std::fs::read(path) {
@@ -264,8 +337,10 @@ impl DclParser<'_> {
             }
             Err(error) => {
                 self.include_stack.remove(&canonical_path);
-                return Err(error)
-                    .with_context(|| format!("Failed to read config {}", path.display()));
+                return Err(ConfigError::io(
+                    format!("Failed to read config {}", path.display()),
+                    error,
+                ));
             }
         };
 
@@ -537,25 +612,42 @@ fn parse_file_modifiers(modifiers: &str) -> Result<(Option<FileBoundary>, Option
     while let Some(token) = tokens.next() {
         match token.to_ascii_lowercase().as_str() {
             "from" => {
-                let value = tokens.next().with_context(|| {
-                    format!("Missing value after 'from' in modifiers '{}'", modifiers)
+                let value = tokens.next().ok_or_else(|| {
+                    ConfigError::invalid(format!(
+                        "Missing value after 'from' in modifiers '{}'",
+                        modifiers
+                    ))
                 })?;
                 if from
                     .replace(parse_file_boundary(value, modifiers)?)
                     .is_some()
                 {
-                    bail!("Duplicate 'from' modifier in '{}'", modifiers);
+                    return Err(ConfigError::invalid(format!(
+                        "Duplicate 'from' modifier in '{}'",
+                        modifiers
+                    )));
                 }
             }
             "to" => {
-                let value = tokens.next().with_context(|| {
-                    format!("Missing value after 'to' in modifiers '{}'", modifiers)
+                let value = tokens.next().ok_or_else(|| {
+                    ConfigError::invalid(format!(
+                        "Missing value after 'to' in modifiers '{}'",
+                        modifiers
+                    ))
                 })?;
                 if to.replace(parse_file_boundary(value, modifiers)?).is_some() {
-                    bail!("Duplicate 'to' modifier in '{}'", modifiers);
+                    return Err(ConfigError::invalid(format!(
+                        "Duplicate 'to' modifier in '{}'",
+                        modifiers
+                    )));
                 }
             }
-            _ => bail!("Unsupported file modifier '{}' in '{}'", token, modifiers),
+            _ => {
+                return Err(ConfigError::invalid(format!(
+                    "Unsupported file modifier '{}' in '{}'",
+                    token, modifiers
+                )));
+            }
         }
     }
 
@@ -564,22 +656,25 @@ fn parse_file_modifiers(modifiers: &str) -> Result<(Option<FileBoundary>, Option
 
 fn parse_file_boundary(value: &str, modifiers: &str) -> Result<FileBoundary> {
     if let Some(trimmed) = value.strip_suffix('%') {
-        let percent = trimmed.parse::<u8>().with_context(|| {
-            format!(
+        let percent = trimmed.parse::<u8>().map_err(|_| {
+            ConfigError::invalid(format!(
                 "Invalid percentage '{}' in modifiers '{}'",
                 value, modifiers
-            )
+            ))
         })?;
         if percent > 100 {
-            bail!("Percentage '{}' in '{}' exceeds 100", value, modifiers);
+            return Err(ConfigError::invalid(format!(
+                "Percentage '{}' in '{}' exceeds 100",
+                value, modifiers
+            )));
         }
         Ok(FileBoundary::Percent(percent))
     } else {
-        let bytes = value.parse::<usize>().with_context(|| {
-            format!(
+        let bytes = value.parse::<usize>().map_err(|_| {
+            ConfigError::invalid(format!(
                 "Invalid byte offset '{}' in modifiers '{}'",
                 value, modifiers
-            )
+            ))
         })?;
         Ok(FileBoundary::Bytes(bytes))
     }

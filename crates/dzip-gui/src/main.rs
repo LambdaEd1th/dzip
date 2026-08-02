@@ -5,7 +5,9 @@ compile_error!("features `desktop` and `web` are mutually exclusive");
 #[cfg(not(any(feature = "desktop", feature = "web")))]
 compile_error!("enable either the `desktop` or `web` feature");
 
+mod app_i18n;
 mod archive_ops;
+mod i18n;
 mod model;
 mod platform;
 mod preferences;
@@ -13,6 +15,7 @@ mod preferences;
 use archive_ops::{build_archive, normalise_archive_name, open_archive, read_entries};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
+use i18n::{I18n, Locale};
 use model::{
     CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive, WorkspacePage,
     human_size, ratio_percent,
@@ -63,66 +66,9 @@ impl AppearanceMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocaleChoice {
-    ZhCn,
-    EnUs,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenSelectMenu {
     Compression(u64),
     Alignment,
-}
-
-impl LocaleChoice {
-    const ALL: [Self; 2] = [Self::ZhCn, Self::EnUs];
-
-    fn from_code(code: Option<&str>) -> Self {
-        match code {
-            Some("en-US") => Self::EnUs,
-            Some("zh-CN") => Self::ZhCn,
-            _ => system_locale(),
-        }
-    }
-
-    const fn code(self) -> &'static str {
-        match self {
-            Self::ZhCn => "zh-CN",
-            Self::EnUs => "en-US",
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::ZhCn => "简体中文",
-            Self::EnUs => "English",
-        }
-    }
-
-    const fn pick(self, zh_cn: &'static str, en_us: &'static str) -> &'static str {
-        match self {
-            Self::ZhCn => zh_cn,
-            Self::EnUs => en_us,
-        }
-    }
-}
-
-fn system_locale() -> LocaleChoice {
-    #[cfg(feature = "web")]
-    let language = web_sys::window().and_then(|window| window.navigator().language());
-    #[cfg(feature = "desktop")]
-    let language = ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok());
-
-    if language
-        .as_deref()
-        .is_some_and(|value| value.to_ascii_lowercase().starts_with("en"))
-    {
-        LocaleChoice::EnUs
-    } else {
-        LocaleChoice::ZhCn
-    }
 }
 
 fn append_log(mut logs: Signal<Vec<String>>, level: &str, message: impl Into<String>) {
@@ -133,35 +79,35 @@ fn append_log(mut logs: Signal<Vec<String>>, level: &str, message: impl Into<Str
     }
 }
 
-fn compression_label(choice: CompressionChoice, locale: LocaleChoice) -> &'static str {
-    match (choice, locale) {
-        (CompressionChoice::Copy, LocaleChoice::EnUs) => "Store only",
-        (CompressionChoice::Zero, LocaleChoice::EnUs) => "Zero fill",
-        _ => choice.label(),
-    }
+fn compression_label(choice: CompressionChoice, i18n: I18n) -> String {
+    i18n.t(match choice {
+        CompressionChoice::Dz => "compression-dz",
+        CompressionChoice::Zlib => "compression-zlib",
+        CompressionChoice::Bzip => "compression-bzip",
+        CompressionChoice::Lzma => "compression-lzma",
+        CompressionChoice::Copy => "compression-copy",
+        CompressionChoice::Zero => "compression-zero",
+    })
 }
 
-fn compression_description(choice: CompressionChoice, locale: LocaleChoice) -> &'static str {
-    if locale == LocaleChoice::ZhCn {
-        return choice.description();
-    }
-    match choice {
-        CompressionChoice::Dz => "Native compression",
-        CompressionChoice::Zlib => "Best compatibility",
-        CompressionChoice::Bzip => "Text and repeated data",
-        CompressionChoice::Lzma => "High compression ratio",
-        CompressionChoice::Copy => "No compression, fastest",
-        CompressionChoice::Zero => "Only for all-zero files",
-    }
+fn compression_description(choice: CompressionChoice, i18n: I18n) -> String {
+    i18n.t(match choice {
+        CompressionChoice::Dz => "compression-dz-description",
+        CompressionChoice::Zlib => "compression-zlib-description",
+        CompressionChoice::Bzip => "compression-bzip-description",
+        CompressionChoice::Lzma => "compression-lzma-description",
+        CompressionChoice::Copy => "compression-copy-description",
+        CompressionChoice::Zero => "compression-zero-description",
+    })
 }
 
-fn alignment_option_label(value: u32, locale: LocaleChoice) -> &'static str {
-    match value {
-        512 => "512 bytes",
-        2048 => "2 KB",
-        4096 => "4 KB",
-        _ => locale.pick("不对齐", "No alignment"),
-    }
+fn alignment_option_label(value: u32, i18n: I18n) -> String {
+    i18n.t(match value {
+        512 => "alignment-512",
+        2048 => "alignment-2048",
+        4096 => "alignment-4096",
+        _ => "alignment-none",
+    })
 }
 
 fn main() {
@@ -170,15 +116,13 @@ fn main() {
 
 #[component]
 fn App() -> Element {
+    app_i18n::load_i18n_sources();
     let mut page = use_signal(|| WorkspacePage::Browse);
     let appearance = use_signal(|| {
         let stored = preferences::read_theme();
         AppearanceMode::from_code(stored.as_deref())
     });
-    let locale = use_signal(|| {
-        let stored = preferences::read_locale();
-        LocaleChoice::from_code(stored.as_deref())
-    });
+    let locale = use_signal(app_i18n::initial_locale);
     use_context_provider(|| locale);
     let mut settings_open = use_signal(|| false);
     let logs = use_signal(|| {
@@ -210,34 +154,29 @@ fn App() -> Element {
     };
     let theme_class = format!("app {appearance_class}");
     let current_locale = locale();
-    let busy_hint = current_locale.pick("大文件可能需要一些时间", "Large files may take a moment");
-    let dismiss_notification = current_locale.pick("关闭提示", "Dismiss notification");
-    let primary_nav_label = current_locale.pick("主导航", "Primary navigation");
-    let archive_nav = current_locale.pick("归档", "Archive");
-    let archive_nav_hint = current_locale.pick("浏览与解压", "Browse and extract");
-    let create_nav = current_locale.pick("新建", "Create");
-    let create_nav_hint = current_locale.pick("压缩文件", "Compress files");
+    let i18n = I18n::new(current_locale);
+    let busy_hint = i18n.t("busy-large-files");
+    let dismiss_notification = i18n.t("dismiss-notification");
+    let primary_nav_label = i18n.t("primary-navigation");
+    let archive_nav = i18n.t("nav-archive");
+    let archive_nav_hint = i18n.t("nav-archive-hint");
+    let create_nav = i18n.t("nav-create");
+    let create_nav_hint = i18n.t("nav-create-hint");
     let page_title = match page() {
-        WorkspacePage::Browse => current_locale.pick("归档管理", "Archive manager"),
-        WorkspacePage::Create if editing_source.read().is_some() => {
-            current_locale.pick("编辑归档", "Edit archive")
-        }
-        WorkspacePage::Create => current_locale.pick("创建归档", "Create archive"),
+        WorkspacePage::Browse => i18n.t("page-archive-manager"),
+        WorkspacePage::Create if editing_source.read().is_some() => i18n.t("page-edit-archive"),
+        WorkspacePage::Create => i18n.t("page-create-archive"),
     };
-    let search_archive = current_locale.pick("搜索归档内容", "Search archive contents");
-    let search_placeholder = current_locale.pick("搜索文件…", "Search files…");
-    let clear_search = current_locale.pick("清除搜索", "Clear search");
-    let open_settings = current_locale.pick("打开设置", "Open settings");
-    let settings_label = current_locale.pick("设置", "Settings");
+    let search_archive = i18n.t("search-archive");
+    let search_placeholder = i18n.t("search-placeholder");
+    let clear_search = i18n.t("clear-search");
+    let open_settings = i18n.t("open-settings");
+    let settings_label = i18n.t("settings");
     let archive_label = archive
         .read()
         .as_ref()
         .map(|value| value.name.clone())
-        .unwrap_or_else(|| {
-            current_locale
-                .pick("尚未打开归档", "No archive open")
-                .to_string()
-        });
+        .unwrap_or_else(|| i18n.t("no-archive-open"));
 
     rsx! {
         document::Stylesheet { href: MAIN_CSS }
@@ -435,28 +374,36 @@ fn App() -> Element {
 fn SettingsModal(
     mut open: Signal<bool>,
     mut appearance: Signal<AppearanceMode>,
-    mut locale: Signal<LocaleChoice>,
+    mut locale: Signal<Locale>,
     logs: Signal<Vec<String>>,
 ) -> Element {
     let mut language_open = use_signal(|| false);
     let mut logs_open = use_signal(|| false);
     let language_open_now = language_open();
     let current_locale = locale();
+    let i18n = I18n::new(current_locale);
+    let language_options = i18n::language_options();
+    let current_language_label = language_options
+        .iter()
+        .find(|option| option.locale == current_locale)
+        .map(|option| option.label.clone())
+        .unwrap_or_else(|| current_locale.code().to_string());
     let version = env!("CARGO_PKG_VERSION");
     let license = env!("CARGO_PKG_LICENSE");
-    let settings_title = current_locale.pick("设置", "Settings");
-    let settings_subtitle = current_locale.pick("配置 Dzip Archive", "Configure Dzip Archive");
-    let close_settings = current_locale.pick("关闭设置", "Close settings");
-    let appearance_heading = current_locale.pick("外观模式", "Appearance mode");
-    let system_label = current_locale.pick("跟随系统", "System");
-    let light_label = current_locale.pick("浅色", "Light");
-    let dark_label = current_locale.pick("深色", "Dark");
-    let language_heading = current_locale.pick("界面语言", "Interface language");
-    let logs_heading = current_locale.pick("日志", "Logs");
-    let view_logs = current_locale.pick("查看应用日志", "View application logs");
-    let about_heading = current_locale.pick("关于", "About");
-    let version_label = current_locale.pick("版本号", "Version");
-    let author_label = current_locale.pick("作者", "Author");
+    let settings_title = i18n.t("settings");
+    let settings_subtitle = i18n.t("settings-subtitle");
+    let close_settings = i18n.t("close-settings");
+    let appearance_heading = i18n.t("appearance-mode");
+    let system_label = i18n.t("appearance-system");
+    let light_label = i18n.t("appearance-light");
+    let dark_label = i18n.t("appearance-dark");
+    let language_heading = i18n.t("interface-language");
+    let logs_heading = i18n.t("logs");
+    let view_logs = i18n.t("view-application-logs");
+    let about_heading = i18n.t("about");
+    let version_label = i18n.t("version");
+    let license_label = i18n.t("license");
+    let author_label = i18n.t("author");
 
     rsx! {
         div {
@@ -549,11 +496,11 @@ fn SettingsModal(
                             button {
                                 class: "settings-language-control",
                                 r#type: "button",
-                                aria_label: language_heading,
+                                aria_label: language_heading.clone(),
                                 aria_haspopup: "listbox",
                                 aria_expanded: if language_open_now { "true" } else { "false" },
                                 onclick: move |_| language_open.set(!language_open_now),
-                                span { "{current_locale.label()}" }
+                                span { "{current_language_label}" }
                                 span { class: "settings-language-caret", Icon { name: IconName::ChevronDown, size: 16 } }
                             }
                             div {
@@ -561,9 +508,12 @@ fn SettingsModal(
                                 role: "listbox",
                                 aria_label: language_heading,
                                 aria_hidden: if language_open_now { "false" } else { "true" },
-                                for choice in LocaleChoice::ALL {
+                                for choice in language_options {
                                     {
-                                        let active = choice == current_locale;
+                                        let choice_locale = choice.locale;
+                                        let choice_label = choice.label;
+                                        let log_label = choice_label.clone();
+                                        let active = choice_locale == current_locale;
                                         rsx! {
                                             button {
                                                 class: if active { "active" } else { "" },
@@ -573,13 +523,13 @@ fn SettingsModal(
                                                 aria_selected: if active { "true" } else { "false" },
                                                 onclick: move |_| {
                                                     language_open.set(false);
-                                                    if let Err(error) = preferences::save_locale(choice.code()) {
+                                                    if let Err(error) = preferences::save_locale(choice_locale.code()) {
                                                         append_log(logs, "ERROR", error);
                                                     }
-                                                    locale.set(choice);
-                                                    append_log(logs, "INFO", format!("Interface language: {}", choice.label()));
+                                                    locale.set(choice_locale);
+                                                    append_log(logs, "INFO", format!("Interface language: {log_label}"));
                                                 },
-                                                span { "{choice.label()}" }
+                                                span { "{choice_label}" }
                                                 if active {
                                                     Icon { name: IconName::Check, size: 15 }
                                                 }
@@ -616,7 +566,7 @@ fn SettingsModal(
                                 dd { "{version}" }
                             }
                             div { class: "settings-about-item",
-                                dt { "License" }
+                                dt { "{license_label}" }
                                 dd { "{license}" }
                             }
                             div { class: "settings-about-item",
@@ -654,18 +604,18 @@ fn SettingsModal(
 fn LogViewerModal(
     mut open: Signal<bool>,
     mut logs: Signal<Vec<String>>,
-    locale: Signal<LocaleChoice>,
+    locale: Signal<Locale>,
 ) -> Element {
     let current_locale = locale();
+    let i18n = I18n::new(current_locale);
     let log_text = logs.read().join("\n");
-    let logs_title = current_locale.pick("应用日志", "Application logs");
-    let logs_subtitle =
-        current_locale.pick("当前会话中的运行记录", "Runtime records from this session");
-    let close_logs = current_locale.pick("关闭日志", "Close logs");
-    let empty_logs = current_locale.pick("暂无日志", "No log entries");
-    let log_content = current_locale.pick("应用日志内容", "Application log content");
-    let clear_label = current_locale.pick("清空", "Clear");
-    let export_label = current_locale.pick("导出日志", "Export log");
+    let logs_title = i18n.t("application-logs");
+    let logs_subtitle = i18n.t("logs-subtitle");
+    let close_logs = i18n.t("close-logs");
+    let empty_logs = i18n.t("no-log-entries");
+    let log_content = i18n.t("log-content");
+    let clear_label = i18n.t("clear");
+    let export_label = i18n.t("export-log");
 
     rsx! {
         div { class: "log-viewer-overlay",
@@ -818,15 +768,13 @@ fn BrowsePage(
     page: Signal<WorkspacePage>,
     on_create: EventHandler<MouseEvent>,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
+    let locale = use_context::<Signal<Locale>>();
     let current_locale = locale();
-    let empty_title = current_locale.pick("打开一个 Dzip 归档", "Open a Dzip archive");
-    let empty_description = current_locale.pick(
-        "查看压缩详情、筛选文件并安全解压。分卷归档请一次选择主文件和所有分卷。",
-        "Inspect compression details, filter files, and extract safely. Select the main file and all volumes together for split archives.",
-    );
-    let select_archive = current_locale.pick("选择 .dz 文件", "Choose .dz files");
-    let create_archive = current_locale.pick("创建新归档", "Create new archive");
+    let i18n = I18n::new(current_locale);
+    let empty_title = i18n.t("empty-open-title");
+    let empty_description = i18n.t("empty-open-description");
+    let select_archive = i18n.t("choose-dz-files");
+    let create_archive = i18n.t("create-new-archive");
     let Some(archive_value) = archive.read().as_ref().cloned() else {
         return rsx! {
             div { class: "empty-state glass-card",
@@ -863,18 +811,17 @@ fn BrowsePage(
                                     let mut browse_path = browse_path;
                                     let mut busy = busy;
                                     let mut toast = toast;
-                                    busy.set(Some(current_locale.pick("正在读取归档…", "Reading archive…").to_string()));
+                                    busy.set(Some(i18n.t("reading-archive")));
                                     let mut loaded = Vec::new();
                                     for file in files {
                                         let name = file.name();
                                         match file.read_bytes().await {
                                             Ok(bytes) => loaded.push((name, bytes.to_vec())),
                                             Err(error) => {
-                                                let message = if current_locale == LocaleChoice::ZhCn {
-                                                    format!("读取 {name} 失败：{error}")
-                                                } else {
-                                                    format!("Failed to read {name}: {error}")
-                                                };
+                                                let message = i18n.t_args("read-file-failed", &[
+                                                    ("name", name.clone()),
+                                                    ("error", error.to_string()),
+                                                ]);
                                                 append_log(logs, "ERROR", &message);
                                                 toast.set(Some((false, message.clone())));
                                                 busy.set(None);
@@ -894,11 +841,10 @@ fn BrowsePage(
                                             selected.write().clear();
                                             search.set(String::new());
                                             browse_path.set(String::new());
-                                            let message = if current_locale == LocaleChoice::ZhCn {
-                                                format!("已打开 {main_name}")
-                                            } else {
-                                                format!("Opened {main_name}")
-                                            };
+                                            let message = i18n.t_args(
+                                                "opened-archive",
+                                                &[("name", main_name.clone())],
+                                            );
                                             append_log(logs, "INFO", &message);
                                             toast.set(Some((true, message)));
                                         }
@@ -961,100 +907,77 @@ fn BrowsePage(
     let archive_for_selected = archive_value.clone();
     let archive_for_all = archive_value.clone();
     let archive_for_edit = archive_value.clone();
-    let overview_description = current_locale.pick(
-        "已载入归档索引，可搜索、选择并解压条目。",
-        "The archive index is loaded. Search, select, and extract entries.",
+    let overview_description = i18n.t("archive-overview-description");
+    let overview_eyebrow = i18n.t("archive-overview");
+    let edit_archive = i18n.t("edit-archive");
+    let extract_selected = i18n.t("extract-selected");
+    let extract_all = i18n.t("extract-all");
+    let files_label = i18n.t("files");
+    let archive_size_label = i18n.t("archive-size");
+    let unpacked_label = i18n.t("unpacked");
+    let ratio_label = i18n.t("compression-ratio");
+    let original_total = i18n.t("original-total");
+    let ratio_note = i18n.t("ratio-note");
+    let archive_contents = i18n.t("archive-contents");
+    let clear_label = i18n.t("clear");
+    let parent_folder = i18n.t("go-parent-folder");
+    let parent_label = i18n.t("go-back");
+    let archive_path_label = i18n.t("archive-path");
+    let root_label = i18n.t("root");
+    let search_results = i18n.t("search-results");
+    let select_visible = i18n.t("select-visible");
+    let name_label = i18n.t("name");
+    let original_size = i18n.t("original-size");
+    let packed_size = i18n.t("packed-size");
+    let algorithm_label = i18n.t("algorithm");
+    let empty_folder = i18n.t("empty-folder");
+    let no_matches = i18n.t("no-matches");
+    let empty_folder_hint = i18n.t("empty-folder-hint");
+    let no_matches_hint = i18n.t("no-matches-hint");
+    let browse_hint = i18n.t("browse-hint");
+    let searching_hint = i18n.t("searching-archive");
+    let choose_entry = i18n.t("select-entry");
+    let details_hint = i18n.t("details-hint");
+    let chunk_note = i18n.t_args(
+        "chunk-count",
+        &[("count", archive_value.chunk_count.to_string())],
     );
-    let edit_archive = current_locale.pick("编辑归档", "Edit archive");
-    let extract_selected = current_locale.pick("解压所选", "Extract selected");
-    let extract_all = current_locale.pick("全部解压", "Extract all");
-    let files_label = current_locale.pick("文件", "Files");
-    let archive_size_label = current_locale.pick("归档大小", "Archive size");
-    let unpacked_label = current_locale.pick("解压后", "Unpacked");
-    let ratio_label = current_locale.pick("压缩占比", "Compression ratio");
-    let original_total = current_locale.pick("原始数据总量", "Original data total");
-    let ratio_note = current_locale.pick("越低压缩越充分", "Lower means better compression");
-    let archive_contents = current_locale.pick("归档内容", "Archive contents");
-    let clear_label = current_locale.pick("清除", "Clear");
-    let parent_folder = current_locale.pick("返回上级文件夹", "Go to parent folder");
-    let parent_label = current_locale.pick("返回上级", "Go back");
-    let archive_path_label = current_locale.pick("归档路径", "Archive path");
-    let root_label = current_locale.pick("根目录", "Root");
-    let search_results = current_locale.pick("搜索结果", "Search results");
-    let select_visible = current_locale.pick("选择全部可见条目", "Select all visible entries");
-    let name_label = current_locale.pick("名称", "Name");
-    let original_size = current_locale.pick("原始大小", "Original size");
-    let packed_size = current_locale.pick("压缩后", "Packed size");
-    let algorithm_label = current_locale.pick("算法", "Algorithm");
-    let empty_folder = current_locale.pick("此文件夹为空", "This folder is empty");
-    let no_matches = current_locale.pick("没有匹配的文件", "No matching files");
-    let empty_folder_hint =
-        current_locale.pick("返回上级目录继续浏览", "Go back to continue browsing");
-    let no_matches_hint = current_locale.pick("换一个关键词试试", "Try another search term");
-    let browse_hint = current_locale.pick(
-        "打开文件夹或查看文件详情",
-        "Open a folder or inspect a file",
+    let volume_note = i18n.t_args(
+        "volume-count",
+        &[("count", archive_value.volume_count.to_string())],
     );
-    let searching_hint = current_locale.pick("正在搜索整个归档", "Searching the entire archive");
-    let choose_entry = current_locale.pick("选择一个条目", "Select an entry");
-    let details_hint = current_locale.pick("这里会显示文件详情", "File details will appear here");
-    let chunk_note = if current_locale == LocaleChoice::ZhCn {
-        format!("{} 个数据块", archive_value.chunk_count)
-    } else {
-        format!("{} chunks", archive_value.chunk_count)
-    };
-    let volume_note = if current_locale == LocaleChoice::ZhCn {
-        format!("{} 个分卷", archive_value.volume_count)
-    } else {
-        format!("{} volumes", archive_value.volume_count)
-    };
-    let contents_summary = if current_locale == LocaleChoice::ZhCn {
+    let contents_summary = i18n.t_args(
         if query.is_empty() {
-            format!("{} 个文件夹 · {} 个文件", folders.len(), visible.len())
+            "contents-summary"
         } else {
-            format!("全归档找到 {} 个文件", visible.len())
-        }
-    } else if query.is_empty() {
-        format!("{} folders · {} files", folders.len(), visible.len())
-    } else {
-        format!("{} files found across the archive", visible.len())
-    };
-    let selected_summary = if current_locale == LocaleChoice::ZhCn {
-        format!("已选 {selected_count} 项")
-    } else {
-        format!("{selected_count} selected")
-    };
-    let directory_summary = if current_locale == LocaleChoice::ZhCn {
-        format!(
-            "当前目录：{} 个文件夹 · {} 个文件",
-            folders.len(),
-            visible.len()
-        )
-    } else {
-        format!(
-            "Current folder: {} folders · {} files",
-            folders.len(),
-            visible.len()
-        )
-    };
-    let search_summary = if current_locale == LocaleChoice::ZhCn {
-        format!(
-            "搜索到 {} / {} 个文件",
-            visible.len(),
-            archive_value.entries.len()
-        )
-    } else {
-        format!(
-            "Found {} of {} files",
-            visible.len(),
-            archive_value.entries.len()
-        )
-    };
+            "contents-search-summary"
+        },
+        &[
+            ("folders", folders.len().to_string()),
+            ("files", visible.len().to_string()),
+        ],
+    );
+    let selected_summary =
+        i18n.t_args("selected-summary", &[("count", selected_count.to_string())]);
+    let directory_summary = i18n.t_args(
+        "directory-summary",
+        &[
+            ("folders", folders.len().to_string()),
+            ("files", visible.len().to_string()),
+        ],
+    );
+    let search_summary = i18n.t_args(
+        "search-summary",
+        &[
+            ("visible", visible.len().to_string()),
+            ("total", archive_value.entries.len().to_string()),
+        ],
+    );
 
     rsx! {
         div { class: "archive-heading",
             div {
-                span { class: "eyebrow accent", "ARCHIVE OVERVIEW" }
+                span { class: "eyebrow accent", "{overview_eyebrow}" }
                 h1 { "{archive_value.name}" }
                 p { "{overview_description}" }
             }
@@ -1064,11 +987,10 @@ fn BrowsePage(
                     onclick: move |_| {
                         let archive_value = archive_for_edit.clone();
                         async move {
-                            let preparing = if current_locale == LocaleChoice::ZhCn {
-                                format!("正在准备 {} 的编辑工作区…", archive_value.name)
-                            } else {
-                                format!("Preparing {} for editing…", archive_value.name)
-                            };
+                            let preparing = i18n.t_args(
+                                "preparing-edit",
+                                &[("name", archive_value.name.clone())],
+                            );
                             busy.set(Some(preparing));
                             let ids: Vec<usize> = archive_value.entries.iter().map(|entry| entry.id).collect();
                             match read_entries(&archive_value, &ids) {
@@ -1104,11 +1026,10 @@ fn BrowsePage(
                                     dz_options.set(archive_value.dz_options);
                                     editing_source.set(Some(source_name.clone()));
                                     page.set(WorkspacePage::Create);
-                                    let message = if current_locale == LocaleChoice::ZhCn {
-                                        format!("已载入 {source_name} 的编辑工作区")
-                                    } else {
-                                        format!("Loaded {source_name} for editing")
-                                    };
+                                    let message = i18n.t_args(
+                                        "loaded-edit",
+                                        &[("name", source_name)],
+                                    );
                                     append_log(logs, "INFO", &message);
                                     toast.set(Some((true, message)));
                                 }
@@ -1315,8 +1236,9 @@ fn CreatePage(
     logs: Signal<Vec<String>>,
     on_saved: EventHandler<LoadedArchive>,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
+    let locale = use_context::<Signal<Locale>>();
     let current_locale = locale();
+    let i18n = I18n::new(current_locale);
     let mut open_select_menu = use_signal(|| None::<OpenSelectMenu>);
     let mut dz_advanced_open = use_signal(|| false);
     let total_size: u64 = draft_files
@@ -1334,116 +1256,75 @@ fn CreatePage(
     let editing_name = editing_source.read().as_ref().cloned();
     let is_editing = editing_name.is_some();
     let page_title = if let Some(source) = editing_name.as_ref() {
-        if current_locale == LocaleChoice::ZhCn {
-            format!("编辑 {source}")
-        } else {
-            format!("Edit {source}")
-        }
+        i18n.t_args("edit-title", &[("name", source.clone())])
     } else {
-        current_locale
-            .pick("创建 Dzip 归档", "Create a Dzip archive")
-            .to_string()
+        i18n.t("create-title")
     };
+    let editing_label = editing_name
+        .as_ref()
+        .map(|source| i18n.t_args("editing-source", &[("name", source.clone())]));
     let page_description = if is_editing {
-        current_locale.pick(
-            "可新增、删除或重命名条目；保存时会使用当前设置完整重建归档。",
-            "Add, remove, or rename entries. Saving rebuilds the archive with the current settings.",
-        )
+        i18n.t("edit-description")
     } else {
-        current_locale.pick(
-            "添加文件，为每个文件选择算法，然后保存为兼容 Dzip 1.1.3 的归档。",
-            "Add files, choose an algorithm for each one, then save a Dzip 1.1.3-compatible archive.",
-        )
+        i18n.t("create-description")
     };
     let save_button = if is_editing {
-        current_locale.pick("保存归档", "Save archive")
+        i18n.t("save-archive")
     } else {
-        current_locale.pick("创建并保存", "Create and save")
+        i18n.t("create-and-save")
     };
-    let edit_notice = current_locale.pick(
-        "原归档不会被直接修改；请选择保存位置生成重建后的归档。",
-        "The source archive is not modified directly; choose where to save the rebuilt archive.",
+    let edit_notice = i18n.t("edit-notice");
+    let draft_heading = i18n.t("draft-files");
+    let draft_summary = i18n.t_args(
+        "draft-summary",
+        &[
+            ("count", draft_files.read().len().to_string()),
+            ("size", human_size(total_size)),
+        ],
     );
-    let draft_heading = current_locale.pick("待压缩文件", "Files to compress");
-    let draft_summary = if current_locale == LocaleChoice::ZhCn {
-        format!(
-            "{} 个文件 · {}",
-            draft_files.read().len(),
-            human_size(total_size)
-        )
-    } else {
-        format!(
-            "{} files · {}",
-            draft_files.read().len(),
-            human_size(total_size)
-        )
-    };
-    let clear_label = current_locale.pick("清空", "Clear");
-    let drop_title = current_locale.pick("把要压缩的文件拖到这里", "Drop files to compress here");
-    let drop_hint = current_locale.pick("或点击选择多个文件", "or click to choose multiple files");
-    let privacy_hint = current_locale.pick(
-        "文件只在当前设备中处理，不会上传到服务器",
-        "Files are processed only on this device and are never uploaded",
-    );
-    let archive_settings = current_locale.pick("归档设置", "Archive settings");
-    let per_file_hint = current_locale.pick(
-        "每个文件可以使用不同算法",
-        "Each file can use a different algorithm",
-    );
-    let archive_name_label = current_locale.pick("归档名称", "Archive name");
-    let default_algorithm =
-        current_locale.pick("新增文件默认算法", "Default algorithm for new files");
-    let apply_all = current_locale.pick("应用到全部", "Apply to all");
-    let alignment_label = current_locale.pick("数据对齐", "Data alignment");
-    let random_access_title = current_locale.pick("随机访问", "Random access");
-    let random_access_description = current_locale.pick(
-        "为条目标记随机访问优化",
-        "Mark entries for random-access optimization",
-    );
-    let combuf_title = current_locale.pick("公共缓冲区", "Common buffer");
-    let combuf_description = current_locale.pick(
-        "DZ 文件间引用以提高压缩率",
-        "Reference data across DZ files for better compression",
-    );
-    let dz_advanced_title = current_locale.pick("DZ 高级参数", "Advanced DZ parameters");
-    let dz_advanced_description = current_locale.pick(
-        "调整原生 Range/LZ 编码器与公共引用分析",
-        "Tune the native Range/LZ encoder and common-reference analysis",
-    );
-    let reset_defaults = current_locale.pick("恢复默认", "Reset defaults");
-    let analysis_parameters = current_locale.pick("编码与引用分析", "Encoding and references");
-    let range_parameters = current_locale.pick("Range/LZ 模型", "Range/LZ model");
-    let preprocess_title = current_locale.pick("预处理分析", "Preprocess analysis");
-    let preprocess_description = current_locale.pick(
-        "排除已能被本地匹配覆盖的数据",
-        "Exclude data already covered by local matches",
-    );
-    let static_tables_title = current_locale.pick("COMBUF 静态表", "COMBUF static tables");
-    let static_tables_description = current_locale.pick(
-        "公共缓冲区启用时为兼容性必需",
-        "Required for compatibility while the common buffer is enabled",
-    );
-    let unlimited_hint = current_locale.pick("-1 表示不限制", "-1 means unlimited");
-    let zero_unlimited_hint = current_locale.pick("0 表示不限制", "0 means unlimited");
-    let combuf_only_hint = current_locale.pick("仅影响公共缓冲区", "Common buffer only");
-    let model_value_hint = current_locale.pick("写入归档全局设置", "Stored in archive settings");
-    let local_processing = current_locale.pick("本地处理", "Local processing");
+    let clear_label = i18n.t("clear");
+    let drop_title = i18n.t("drop-files");
+    let drop_hint = i18n.t("drop-files-hint");
+    let privacy_hint = i18n.t("privacy-hint");
+    let archive_settings = i18n.t("archive-settings");
+    let per_file_hint = i18n.t("per-file-hint");
+    let archive_name_label = i18n.t("archive-name");
+    let default_algorithm = i18n.t("default-algorithm");
+    let apply_all = i18n.t("apply-all");
+    let alignment_label = i18n.t("data-alignment");
+    let random_access_title = i18n.t("random-access");
+    let random_access_description = i18n.t("random-access-description");
+    let combuf_title = i18n.t("common-buffer");
+    let combuf_description = i18n.t("common-buffer-description");
+    let dz_advanced_title = i18n.t("dz-advanced");
+    let dz_advanced_description = i18n.t("dz-advanced-description");
+    let reset_defaults = i18n.t("reset-defaults");
+    let analysis_parameters = i18n.t("encoding-references");
+    let range_parameters = i18n.t("range-model");
+    let preprocess_title = i18n.t("preprocess-analysis");
+    let preprocess_description = i18n.t("preprocess-description");
+    let static_tables_title = i18n.t("combuf-static-tables");
+    let static_tables_description = i18n.t("combuf-static-description");
+    let unlimited_hint = i18n.t("minus-one-unlimited");
+    let zero_unlimited_hint = i18n.t("zero-unlimited");
+    let combuf_only_hint = i18n.t("common-buffer-only");
+    let model_value_hint = i18n.t("stored-archive-settings");
+    let local_processing = i18n.t("local-processing");
     let local_processing_description = if cfg!(feature = "web") {
-        current_locale.pick(
-            "WebAssembly 在浏览器中完成压缩",
-            "WebAssembly compresses files in your browser",
-        )
+        i18n.t("local-processing-web")
     } else {
-        current_locale.pick(
-            "原生进程直接处理本地数据",
-            "The native process handles local data directly",
-        )
+        i18n.t("local-processing-desktop")
     };
+    let mode_eyebrow = i18n.t(if is_editing {
+        "edit-archive-mode"
+    } else {
+        "new-archive"
+    });
 
     rsx! {
         div { class: "archive-heading create-heading",
             div {
-                span { class: "eyebrow accent", if is_editing { "EDIT ARCHIVE" } else { "NEW ARCHIVE" } }
+                span { class: "eyebrow accent", "{mode_eyebrow}" }
                 h1 { "{page_title}" }
                 p { "{page_description}" }
             }
@@ -1457,21 +1338,17 @@ fn CreatePage(
                     let random = random_access();
                     let dz = dz_options();
                     async move {
-                        busy.set(Some(current_locale.pick("正在压缩文件…", "Compressing files…").to_string()));
+                        busy.set(Some(i18n.t("compressing-files")));
                         match build_archive(&files, &name, align, random, dz) {
                             Ok(bytes) => {
                                 let reopened = open_archive(name.clone(), bytes.clone(), Vec::new());
-                                busy.set(Some(current_locale.pick("正在保存归档…", "Saving archive…").to_string()));
+                                busy.set(Some(i18n.t("saving-archive")));
                                 match platform::save_bytes(&name, bytes).await {
                                     Ok(_) => {
-                                        let message = if current_locale == LocaleChoice::ZhCn {
-                                            let action = if is_editing { "保存" } else { "创建" };
-                                            format!("{name} {action}成功")
-                                        } else if is_editing {
-                                            format!("Saved {name}")
-                                        } else {
-                                            format!("Created {name}")
-                                        };
+                                        let message = i18n.t_args(
+                                            if is_editing { "saved-archive" } else { "created-archive" },
+                                            &[("name", name.clone())],
+                                        );
                                         append_log(logs, "INFO", &message);
                                         toast.set(Some((true, message)));
                                         if let Ok(value) = reopened {
@@ -1498,13 +1375,11 @@ fn CreatePage(
             }
         }
 
-        if let Some(source) = editing_name.as_ref() {
+        if editing_name.is_some() {
             div { class: "edit-mode-banner",
                 div { class: "soft-icon", Icon { name: IconName::Pencil, size: 18 } }
                 div {
-                    strong {
-                        if current_locale == LocaleChoice::ZhCn { "正在编辑 {source}" } else { "Editing {source}" }
-                    }
+                    strong { "{editing_label.as_deref().unwrap_or_default()}" }
                     span { "{edit_notice}" }
                 }
             }
@@ -1583,8 +1458,8 @@ fn CreatePage(
                                     input {
                                         class: "draft-path-input",
                                         value: "{file.path}",
-                                        aria_label: if current_locale == LocaleChoice::ZhCn { format!("编辑归档路径 {}", file.path) } else { format!("Edit archive path {}", file.path) },
-                                        title: current_locale.pick("编辑归档内路径", "Edit path inside archive"),
+                                        aria_label: i18n.t_args("edit-archive-path-label", &[("path", file.path.clone())]),
+                                        title: i18n.t("edit-archive-path"),
                                         oninput: {
                                             let id = file.id;
                                             move |event| {
@@ -1605,7 +1480,7 @@ fn CreatePage(
                                 }
                                 button {
                                     class: "row-action danger",
-                                    aria_label: if current_locale == LocaleChoice::ZhCn { format!("移除 {}", file.path) } else { format!("Remove {}", file.path) },
+                                    aria_label: i18n.t_args("remove-file-label", &[("path", file.path.clone())]),
                                     onclick: {
                                         let id = file.id;
                                         move |_| draft_files.write().retain(|item| item.id != id)
@@ -1657,8 +1532,8 @@ fn CreatePage(
                             class: if choice == current_compression { "compression-option active" } else { "compression-option" },
                             onclick: move |_| compression.set(choice),
                             span { class: "radio-dot" }
-                            strong { "{compression_label(choice, current_locale)}" }
-                            small { "{compression_description(choice, current_locale)}" }
+                            strong { "{compression_label(choice, i18n)}" }
+                            small { "{compression_description(choice, i18n)}" }
                         }
                     }
                 }
@@ -1880,21 +1755,19 @@ fn CompressionPicker(
     mut draft_files: Signal<Vec<DraftFile>>,
     mut open_menu: Signal<Option<OpenSelectMenu>>,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let is_open = open_menu() == Some(OpenSelectMenu::Compression(file_id));
     let menu_id = format!("compression-menu-{file_id}");
-    let current_label = compression_label(value, current_locale);
-    let trigger_label = if current_locale == LocaleChoice::ZhCn {
-        format!("设置 {file_path} 的压缩算法，当前为 {current_label}")
-    } else {
-        format!("Set compression for {file_path}; current algorithm is {current_label}")
-    };
-    let menu_label = if current_locale == LocaleChoice::ZhCn {
-        format!("{file_path} 的压缩算法")
-    } else {
-        format!("Compression algorithm for {file_path}")
-    };
+    let current_label = compression_label(value, i18n);
+    let trigger_label = i18n.t_args(
+        "set-compression-for",
+        &[
+            ("path", file_path.clone()),
+            ("algorithm", current_label.clone()),
+        ],
+    );
+    let menu_label = i18n.t_args("compression-menu-for", &[("path", file_path)]);
 
     rsx! {
         div {
@@ -1931,7 +1804,7 @@ fn CompressionPicker(
                             r#type: "button",
                             role: "option",
                             aria_selected: if choice == value { "true" } else { "false" },
-                            title: compression_description(choice, current_locale),
+                            title: compression_description(choice, i18n),
                             onclick: move |_| {
                                 if let Some(item) = draft_files
                                     .write()
@@ -1947,7 +1820,7 @@ fn CompressionPicker(
                                     Icon { name: IconName::Check, size: 13 }
                                 }
                             }
-                            span { "{compression_label(choice, current_locale)}" }
+                            span { "{compression_label(choice, i18n)}" }
                         }
                     }
                 }
@@ -1963,12 +1836,12 @@ fn AlignmentPicker(
 ) -> Element {
     const OPTIONS: [u32; 4] = [0, 512, 2048, 4096];
 
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let current_value = alignment();
-    let current_label = alignment_option_label(current_value, current_locale);
+    let current_label = alignment_option_label(current_value, i18n);
     let is_open = open_menu() == Some(OpenSelectMenu::Alignment);
-    let aria_label = current_locale.pick("选择数据对齐方式", "Choose data alignment");
+    let aria_label = i18n.t("choose-alignment");
 
     rsx! {
         div {
@@ -1977,7 +1850,7 @@ fn AlignmentPicker(
             button {
                 class: "alignment-trigger",
                 r#type: "button",
-                aria_label,
+                aria_label: aria_label.clone(),
                 aria_haspopup: "listbox",
                 aria_expanded: if is_open { "true" } else { "false" },
                 aria_controls: "alignment-menu",
@@ -1998,10 +1871,10 @@ fn AlignmentPicker(
                     id: "alignment-menu",
                     class: "alignment-menu",
                     role: "listbox",
-                    aria_label,
+                    aria_label: aria_label.clone(),
                     for option in OPTIONS {
                         {
-                            let option_label = alignment_option_label(option, current_locale);
+                            let option_label = alignment_option_label(option, i18n);
                             let active = option == current_value;
                             rsx! {
                                 button {
@@ -2036,12 +1909,12 @@ fn UploadButton(
     default_compression: CompressionChoice,
     directory: bool,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let label = if directory {
-        current_locale.pick("添加文件夹", "Add folder")
+        i18n.t("add-folder")
     } else {
-        current_locale.pick("添加文件", "Add files")
+        i18n.t("add-files")
     };
     rsx! {
         label { class: if directory { "button secondary compact file-action folder-upload" } else { "button secondary compact file-action" },
@@ -2128,16 +2001,16 @@ async fn extract_and_export(
     mut busy: Signal<Option<String>>,
     mut toast: Signal<Option<(bool, String)>>,
     logs: Signal<Vec<String>>,
-    locale: LocaleChoice,
+    locale: Locale,
 ) {
     if entry_ids.is_empty() {
         return;
     }
-    let progress = if locale == LocaleChoice::ZhCn {
-        format!("正在解压 {} 个文件…", entry_ids.len())
-    } else {
-        format!("Extracting {} files…", entry_ids.len())
-    };
+    let i18n = I18n::new(locale);
+    let progress = i18n.t_args(
+        "extracting-files",
+        &[("count", entry_ids.len().to_string())],
+    );
     busy.set(Some(progress));
     let result = match read_entries(&archive, &entry_ids) {
         Ok(files) => platform::export_files(&archive.name, files).await,
@@ -2161,8 +2034,8 @@ async fn extract_and_export(
 fn NavButton(
     active: bool,
     icon: IconName,
-    label: &'static str,
-    hint: &'static str,
+    label: String,
+    hint: String,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
     rsx! {
@@ -2176,7 +2049,7 @@ fn NavButton(
 #[component]
 fn StatCard(
     icon: IconName,
-    label: &'static str,
+    label: String,
     value: String,
     note: String,
     tone: &'static str,
@@ -2199,23 +2072,18 @@ fn FolderRow(
     mut browse_path: Signal<String>,
     mut focused_entry: Signal<Option<usize>>,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let target = folder.path.clone();
-    let open_label = if current_locale == LocaleChoice::ZhCn {
-        format!("打开文件夹 {}", folder.name)
-    } else {
-        format!("Open folder {}", folder.name)
-    };
-    let file_count = if current_locale == LocaleChoice::ZhCn {
-        format!("{} 个文件", folder.file_count)
-    } else {
-        format!("{} files", folder.file_count)
-    };
-    let original_label = current_locale.pick("原始", "Original");
-    let packed_label = current_locale.pick("压缩后", "Packed");
-    let type_label = current_locale.pick("类型", "Type");
-    let folder_label = current_locale.pick("文件夹", "Folder");
+    let open_label = i18n.t_args("open-folder", &[("name", folder.name.clone())]);
+    let file_count = i18n.t_args(
+        "folder-file-count",
+        &[("count", folder.file_count.to_string())],
+    );
+    let original_label = i18n.t("original");
+    let packed_label = i18n.t("packed");
+    let type_label = i18n.t("type");
+    let folder_label = i18n.t("folder");
     rsx! {
         button {
             class: "file-row folder-row",
@@ -2247,22 +2115,18 @@ fn FileRow(
     focused_entry: Signal<Option<usize>>,
     active: bool,
 ) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let is_selected = selected.read().contains(&entry.id);
     let icon = icon_for_file(&entry.name);
-    let select_label = if current_locale == LocaleChoice::ZhCn {
-        format!("选择 {}", entry.path)
-    } else {
-        format!("Select {}", entry.path)
-    };
-    let original_label = current_locale.pick("原始", "Original");
-    let packed_label = current_locale.pick("压缩后", "Packed");
-    let algorithm_label = current_locale.pick("算法", "Algorithm");
+    let select_label = i18n.t_args("select-file", &[("name", entry.path.clone())]);
+    let original_label = i18n.t("original");
+    let packed_label = i18n.t("packed");
+    let algorithm_label = i18n.t("algorithm");
     let folder_name = if entry.folder == "根目录" {
-        current_locale.pick("根目录", "Root")
+        i18n.t("root")
     } else {
-        entry.folder.as_str()
+        entry.folder.clone()
     };
     rsx! {
         div {
@@ -2304,29 +2168,30 @@ fn FileRow(
 
 #[component]
 fn EntryInspector(entry: EntryView) -> Element {
-    let locale = use_context::<Signal<LocaleChoice>>();
-    let current_locale = locale();
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
     let ratio = ratio_percent(entry.packed_size, entry.size);
-    let ratio_label = current_locale.pick("压缩占比", "Compression ratio");
-    let saved_label = if current_locale == LocaleChoice::ZhCn {
-        format!("节省 {}% 空间", 100u64.saturating_sub(ratio))
-    } else {
-        format!("{}% space saved", 100u64.saturating_sub(ratio))
-    };
-    let original_size = current_locale.pick("原始大小", "Original size");
-    let packed_size = current_locale.pick("压缩后", "Packed size");
-    let compression_algorithm = current_locale.pick("压缩算法", "Compression algorithm");
-    let chunks_label = current_locale.pick("数据块", "Chunks");
-    let volume_label = current_locale.pick("所在分卷", "Volume");
-    let archive_path = current_locale.pick("归档路径", "Archive path");
+    let ratio_label = i18n.t("compression-ratio");
+    let saved_label = i18n.t_args(
+        "saved-space",
+        &[("percent", 100u64.saturating_sub(ratio).to_string())],
+    );
+    let original_size = i18n.t("original-size");
+    let packed_size = i18n.t("packed-size");
+    let compression_algorithm = i18n.t("compression-algorithm");
+    let chunks_label = i18n.t("chunks");
+    let volume_label = i18n.t("volume");
+    let archive_path = i18n.t("archive-path");
+    let file_details = i18n.t("file-details");
+    let volume_value = i18n.t_args("volume-value", &[("number", entry.volume.to_string())]);
     let folder_name = if entry.folder == "根目录" {
-        current_locale.pick("根目录", "Root")
+        i18n.t("root")
     } else {
-        entry.folder.as_str()
+        entry.folder.clone()
     };
     rsx! {
         div { class: "inspector-header",
-            span { class: "eyebrow", "FILE DETAILS" }
+            span { class: "eyebrow", "{file_details}" }
             div { class: "inspector-file-icon", Icon { name: icon_for_file(&entry.name), size: 28 } }
             h2 { "{entry.name}" }
             p { "{folder_name}" }
@@ -2341,7 +2206,7 @@ fn EntryInspector(entry: EntryView) -> Element {
             div { dt { "{packed_size}" } dd { "{human_size(entry.packed_size)}" } }
             div { dt { "{compression_algorithm}" } dd { span { class: "method-chip", "{entry.compression}" } } }
             div { dt { "{chunks_label}" } dd { "{entry.chunks}" } }
-            div { dt { "{volume_label}" } dd { "Volume {entry.volume}" } }
+            div { dt { "{volume_label}" } dd { "{volume_value}" } }
         }
         div { class: "path-box",
             span { "{archive_path}" }
@@ -2352,8 +2217,8 @@ fn EntryInspector(entry: EntryView) -> Element {
 
 #[component]
 fn NumberParameter(
-    label: &'static str,
-    hint: &'static str,
+    label: String,
+    hint: String,
     value: i64,
     min: i64,
     max: i64,
@@ -2384,8 +2249,8 @@ fn NumberParameter(
 
 #[component]
 fn ToggleRow(
-    title: &'static str,
-    description: &'static str,
+    title: String,
+    description: String,
     checked: bool,
     disabled: bool,
     onchange: EventHandler<bool>,
