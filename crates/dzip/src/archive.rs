@@ -278,7 +278,7 @@ fn finish_open<R: Read + Seek, V: VolumeSource>(
     }
 
     match options.compatibility {
-        Compatibility::Dzip => correct_chunk_sizes(&mut parsed.chunks, &sizes),
+        Compatibility::Original => correct_chunk_sizes(&mut parsed.chunks, &sizes),
         Compatibility::Strict => validate_chunk_bounds(&parsed.chunks, &sizes)?,
     }
 

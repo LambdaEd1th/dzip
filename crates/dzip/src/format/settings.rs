@@ -74,7 +74,7 @@ impl RangeSettings {
         }
         if self.flags & Self::USE_DZ_STATIC_TABLES != 0 {
             return Err(invalid_settings(
-                "DZ static tables are rejected by dzip 1.1.3",
+                "DZ static tables are rejected by dzip.exe",
             ));
         }
         if self.offset_contexts == 0 || self.offset_contexts > 8 {

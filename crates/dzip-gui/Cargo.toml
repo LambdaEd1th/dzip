@@ -27,18 +27,29 @@ path = "src/main.rs"
 
 [dependencies]
 dioxus = { version = "0.7", default-features = false, features = ["asset", "document", "hooks", "html", "launch", "logger", "macro", "signals", "warnings"] }
-dzip = { version = "0.4.0", path = "../dzip" }
+dzip = { version = "0.4.1", path = "../dzip" }
 crc32fast = "1.5"
 fluent-bundle = "0.16"
 log.workspace = true
 rfd = { version = "0.17", optional = true, default-features = false, features = ["xdg-portal"] }
 unic-langid = "0.9"
 wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "Blob",
     "CssStyleDeclaration",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
     "Document",
+    "DragEvent",
+    "File",
+    "FileList",
+    "FileSystemDirectoryEntry",
+    "FileSystemDirectoryReader",
+    "FileSystemEntry",
+    "FileSystemFileEntry",
     "HtmlAnchorElement",
     "HtmlElement",
     "Location",
@@ -52,4 +63,4 @@ web-sys = { version = "0.3", optional = true, features = [
 default = ["desktop"]
 bundle = []
 desktop = ["dioxus/desktop", "dzip/parallel", "dep:rfd"]
-web = ["dioxus/web", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+web = ["dioxus/web", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]

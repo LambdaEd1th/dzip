@@ -47,7 +47,7 @@ pub fn compress_archive(
     let settings = options.settings.validate()?;
     if inputs.len() > 0x8000 {
         return Err(DzipError::InvalidDz(
-            "dzip 1.1.3 accepts at most 32768 DZ chunks".to_string(),
+            "dzip.exe accepts at most 32768 DZ chunks".to_string(),
         ));
     }
     if options.max_mem_usage >= 0 {

@@ -1,7 +1,7 @@
 //! # lzma
 //!
 //! A pure-Rust, single-threaded LZMA encoder retargeted to the **7-zip LZMA SDK
-//! 9.20** decisions used by dzip 1.1.3.
+//! 9.20** decisions used by dzip.exe.
 //!
 //! The emitted stream is a **raw LZMA stream**: no 13-byte `.lzma` file header
 //! and, for [`encode`], no end-of-stream marker. The

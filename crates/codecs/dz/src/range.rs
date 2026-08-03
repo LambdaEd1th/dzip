@@ -219,7 +219,7 @@ impl<'a> RangeDecoder<'a> {
     /// stream terminator.
     ///
     /// The decoder keeps up to four bytes of look-ahead in `code`.  dzip
-    /// 1.1.3's `sub_408C20` derives the shortest midpoint representation of
+    /// dzip.exe's `sub_408C20` derives the shortest midpoint representation of
     /// the final interval and seeks backwards over the unused look-ahead
     /// before starting the next COMBUF sub-stream.
     pub(crate) fn finished_position(&self) -> usize {

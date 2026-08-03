@@ -72,7 +72,7 @@ fn archive_builder(config: config::DzipConfig) -> Result<ArchiveBuilder> {
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: config.archives,
         alignment: config.align.unwrap_or(0),
-        compatibility: dzip::Compatibility::Dzip,
+        compatibility: dzip::Compatibility::Original,
         dz: DzOptions {
             settings,
             max_mem_usage: dz.max_mem_usage,
@@ -86,7 +86,7 @@ fn archive_builder(config: config::DzipConfig) -> Result<ArchiveBuilder> {
     for entry in config.files {
         let Some(compression) = entry.selected_compression() else {
             debug!(
-                "Ignoring {} because no registered Dzip 1.1.3 coder matches flags {:#x}",
+                "Ignoring {} because no registered dzip.exe coder matches flags {:#x}",
                 entry.path.display(),
                 entry.dcl_flags().unwrap_or(0)
             );

@@ -27,7 +27,7 @@ fn dz_round_trip_small_inputs() {
 }
 
 #[test]
-fn empty_dz_stream_matches_dzip_1_1_3() {
+fn empty_dz_stream_matches_dzip_original() {
     assert_eq!(
         compress_chunk(&[], RangeSettings::default()).unwrap(),
         [0xff, 0xc0]
@@ -173,7 +173,7 @@ fn combuf_recent_bases_round_trip_with_and_without_reference_trimming() {
 }
 
 #[test]
-fn tiny_match_tokenization_matches_dzip_1_1_3() {
+fn tiny_match_tokenization_matches_dzip_original() {
     let data = b"// Some text file...\r\n";
     let settings = RangeSettings::default();
     let expected = [

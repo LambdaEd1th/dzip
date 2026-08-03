@@ -1,11 +1,11 @@
-/// Controls whether original Dzip 1.1.3 quirks are reproduced or rejected.
+/// Controls whether dzip.exe quirks are reproduced or rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Compatibility {
     /// Require internally consistent physical sizes and reject unknown flags.
     Strict,
-    /// Reproduce writer quirks and repair known Dzip 1.1.3 length fields.
+    /// Reproduce writer quirks and repair known dzip.exe length fields.
     #[default]
-    Dzip,
+    Original,
 }
 
 #[cfg(feature = "decode")]
@@ -73,7 +73,7 @@ impl Default for PackOptions {
         Self {
             volume_names: vec!["archive.dz".to_string()],
             alignment: 0,
-            compatibility: Compatibility::Dzip,
+            compatibility: Compatibility::Original,
             dz: crate::codec::DzOptions::default(),
         }
     }
@@ -89,7 +89,7 @@ pub struct EntryOptions {
     /// Exact on-disk flags to write for this entry.
     ///
     /// This is primarily intended for compatibility frontends that need to
-    /// preserve Dzip 1.1.3's combined `.dcl` flags. When present, these flags
+    /// preserve dzip.exe's combined `.dcl` flags. When present, these flags
     /// also select the encoder using the original packer registration order;
     /// [`Self::compression`] is ignored.
     pub raw_flags: Option<u16>,

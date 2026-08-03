@@ -21,31 +21,36 @@ env:
 
 jobs:
   build_native:
-    name: Build GUI (${{ matrix.artifact }})
+    name: Build CLI + GUI (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
-            artifact: dzip-archive-linux-x86_64
-            binary: dzip-gui
+            artifact: dzip-linux-x86_64
+            gui_binary: dzip-gui
+            cli_binary: dzip-cli
             package_deb: true
           - os: ubuntu-24.04-arm
-            artifact: dzip-archive-linux-aarch64
-            binary: dzip-gui
+            artifact: dzip-linux-aarch64
+            gui_binary: dzip-gui
+            cli_binary: dzip-cli
             package_deb: true
           - os: macos-15
-            artifact: dzip-archive-macos-aarch64
-            binary: dzip-gui
+            artifact: dzip-macos-aarch64
+            gui_binary: dzip-gui
+            cli_binary: dzip-cli
             package_app: true
           - os: windows-2025-vs2026
-            artifact: dzip-archive-windows-x86_64
-            binary: dzip-gui.exe
+            artifact: dzip-windows-x86_64
+            gui_binary: dzip-gui.exe
+            cli_binary: dzip-cli.exe
             package_zip: true
           - os: windows-11-arm
-            artifact: dzip-archive-windows-aarch64
-            binary: dzip-gui.exe
+            artifact: dzip-windows-aarch64
+            gui_binary: dzip-gui.exe
+            cli_binary: dzip-cli.exe
             package_zip: true
 
     steps:
@@ -71,8 +76,10 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release --package dzip-gui --bin dzip-gui --features bundle
+      - name: Build CLI and GUI
+        run: |
+          cargo build --release --package dzip-gui --bin dzip-gui --features bundle
+          cargo build --release --package dzip-cli
 
       - name: Install cargo-bundle
         if: matrix.package_app == true || matrix.package_deb == true
@@ -90,7 +97,12 @@ jobs:
           test -n "$APP_PATH"
           mkdir -p "$APP_PATH/Contents/Resources"
           cp -R crates/dzip-gui/assets "$APP_PATH/Contents/Resources/assets"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ matrix.artifact }}-app-${{ github.ref_name }}.zip"
+          PACKAGE_DIR="${{ matrix.artifact }}-${{ github.ref_name }}"
+          mkdir "$PACKAGE_DIR"
+          ditto "$APP_PATH" "$PACKAGE_DIR/$(basename "$APP_PATH")"
+          cp "target/release/${{ matrix.cli_binary }}" "$PACKAGE_DIR/"
+          cp README.md LICENSE "$PACKAGE_DIR/"
+          ditto -c -k --sequesterRsrc --keepParent "$PACKAGE_DIR" "$PACKAGE_DIR.zip"
 
       - name: Build Debian package
         if: matrix.package_deb == true
@@ -102,18 +114,25 @@ jobs:
         run: |
           DEB_PATH=$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)
           test -n "$DEB_PATH"
-          DEB_FILE="${{ matrix.artifact }}-${{ github.ref_name }}.deb"
-          cp "$DEB_PATH" "$DEB_FILE"
-          cp -R crates/dzip-gui/assets assets
-          zip -r "${{ matrix.artifact }}-${{ github.ref_name }}-deb.zip" "$DEB_FILE" assets
+          PACKAGE_DIR="${{ matrix.artifact }}-${{ github.ref_name }}"
+          mkdir "$PACKAGE_DIR"
+          cp "$DEB_PATH" "$PACKAGE_DIR/dzip-archive-${{ github.ref_name }}.deb"
+          cp "target/release/${{ matrix.cli_binary }}" "$PACKAGE_DIR/"
+          cp README.md LICENSE "$PACKAGE_DIR/"
+          cp -R crates/dzip-gui/assets "$PACKAGE_DIR/assets"
+          zip -r "$PACKAGE_DIR.zip" "$PACKAGE_DIR"
 
       - name: Package binary (Windows)
         if: matrix.package_zip == true
         shell: pwsh
         run: |
-          Copy-Item target/release/${{ matrix.binary }} ${{ matrix.binary }}
-          Copy-Item crates/dzip-gui/assets assets -Recurse
-          Compress-Archive -Path @("${{ matrix.binary }}", "assets") -DestinationPath "${{ matrix.artifact }}-${{ github.ref_name }}.zip"
+          $packageDir = "${{ matrix.artifact }}-${{ github.ref_name }}"
+          New-Item -ItemType Directory -Path $packageDir | Out-Null
+          Copy-Item "target/release/${{ matrix.gui_binary }}" "$packageDir/"
+          Copy-Item "target/release/${{ matrix.cli_binary }}" "$packageDir/"
+          Copy-Item crates/dzip-gui/assets "$packageDir/assets" -Recurse
+          Copy-Item README.md, LICENSE "$packageDir/"
+          Compress-Archive -Path $packageDir -DestinationPath "$packageDir.zip"
 
       - name: Upload Windows artifact
         if: matrix.package_zip == true
@@ -126,105 +145,15 @@ jobs:
         if: matrix.package_app == true
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}-app
-          path: ${{ matrix.artifact }}-app-${{ github.ref_name }}.zip
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}-${{ github.ref_name }}.zip
 
       - name: Upload Debian artifact
         if: matrix.package_deb == true
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}-deb
-          path: ${{ matrix.artifact }}-${{ github.ref_name }}-deb.zip
-
-  build_cli:
-    name: Build CLI (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            use_cross: false
-            suffix: ""
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            use_cross: true
-            suffix: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            use_cross: false
-            suffix: ".exe"
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            use_cross: false
-            suffix: ".exe"
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            use_cross: false
-            suffix: ""
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross
-        if: matrix.use_cross
-        uses: taiki-e/install-action@v2.85.4
-        with:
-          tool: cross
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: cli-${{ matrix.target }}
-
-      - name: Build CLI
-        shell: bash
-        run: |
-          CMD=cargo
-          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-            CMD=cross
-          fi
-          $CMD build --release --target ${{ matrix.target }} --package dzip-cli
-
-      - name: Package CLI (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          RELEASE_NAME="dzip-cli-${{ github.ref_name }}-${{ matrix.target }}"
-          ARCHIVE_NAME="${RELEASE_NAME}.zip"
-          BIN_PATH="target/${{ matrix.target }}/release/dzip-cli${{ matrix.suffix }}"
-          test -f "$BIN_PATH"
-          mkdir "$RELEASE_NAME"
-          cp "$BIN_PATH" "$RELEASE_NAME/"
-          if [ -f README.md ]; then cp README.md "$RELEASE_NAME/"; fi
-          if [ -f LICENSE ]; then cp LICENSE "$RELEASE_NAME/"; fi
-          zip -r "$ARCHIVE_NAME" "$RELEASE_NAME"
-
-      - name: Package CLI (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $releaseName = "dzip-cli-${{ github.ref_name }}-${{ matrix.target }}"
-          $binaryPath = "target/${{ matrix.target }}/release/dzip-cli${{ matrix.suffix }}"
-          if (-not (Test-Path $binaryPath)) { throw "Binary not found: $binaryPath" }
-          New-Item -ItemType Directory -Path $releaseName | Out-Null
-          Copy-Item $binaryPath "$releaseName/"
-          if (Test-Path README.md) { Copy-Item README.md "$releaseName/" }
-          if (Test-Path LICENSE) { Copy-Item LICENSE "$releaseName/" }
-          Compress-Archive -Path $releaseName -DestinationPath "$releaseName.zip"
-
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: dzip-cli-${{ matrix.target }}
-          path: dzip-cli-${{ github.ref_name }}-${{ matrix.target }}.zip
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}-${{ github.ref_name }}.zip
 
   build_wasm:
     name: Build WASM
@@ -289,7 +218,7 @@ jobs:
   publish_release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build_native, build_cli, build_wasm]
+    needs: [build_native, build_wasm]
 
     steps:
       - name: Download all artifacts

@@ -1,4 +1,4 @@
-//! Pure-Rust reproduction of the LZMA stream emitted by dzip 1.1.3.
+//! Pure-Rust reproduction of the LZMA stream emitted by dzip.exe.
 //!
 //! dzip initializes the LZMA SDK 9.20 level-5 defaults, overrides the
 //! dictionary to 64 KiB, and enables the end marker. The vendored encoder is

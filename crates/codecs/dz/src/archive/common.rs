@@ -267,8 +267,7 @@ pub(crate) fn validate_common_settings(settings: RangeSettings, use_combuf: bool
     }
     if settings.flags & RangeSettings::USE_COMBUF_STATIC_TABLES == 0 {
         return Err(DzipError::InvalidDz(
-            "dzip 1.1.3 requires COMBUF static tables when common references are enabled"
-                .to_string(),
+            "dzip.exe requires COMBUF static tables when common references are enabled".to_string(),
         ));
     }
     if settings.ref_length_table_size == 0

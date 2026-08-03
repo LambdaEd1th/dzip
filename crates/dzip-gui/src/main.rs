@@ -7,14 +7,16 @@ compile_error!("enable either the `desktop` or `web` feature");
 
 mod app_i18n;
 mod archive_ops;
+mod file_drop;
 mod i18n;
 mod model;
 mod platform;
 mod preferences;
 
 use archive_ops::{build_archive, normalise_archive_name, open_archive, read_entries};
-use dioxus::html::{FileData, HasFileData};
+use dioxus::html::FileData;
 use dioxus::prelude::*;
+use dzip::Compatibility;
 use i18n::{I18n, Locale};
 use model::{
     CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive, WorkspacePage,
@@ -114,9 +116,34 @@ fn main() {
     dioxus::launch(App);
 }
 
+#[cfg(feature = "web")]
+fn use_web_file_drop_guard() {
+    use_effect(|| {
+        dioxus::document::eval(
+            r#"
+            (() => {
+                if (window.__dzipFileDropGuard) return;
+                const blocksNativeFileDrop = (event) => {
+                    const transfer = event.dataTransfer;
+                    if (!transfer) return;
+                    const hasFiles = Array.from(transfer.types || []).includes('Files')
+                        || Array.from(transfer.items || []).some((item) => item.kind === 'file');
+                    if (hasFiles) event.preventDefault();
+                };
+                window.__dzipFileDropGuard = blocksNativeFileDrop;
+                document.addEventListener('dragover', blocksNativeFileDrop, true);
+                document.addEventListener('drop', blocksNativeFileDrop, true);
+            })();
+            "#,
+        );
+    });
+}
+
 #[component]
 fn App() -> Element {
     app_i18n::load_i18n_sources();
+    #[cfg(feature = "web")]
+    use_web_file_drop_guard();
     let mut page = use_signal(|| WorkspacePage::Browse);
     let appearance = use_signal(|| {
         let stored = preferences::read_theme();
@@ -141,18 +168,28 @@ fn App() -> Element {
     let mut archive_name = use_signal(|| "game-assets.dz".to_string());
     let mut alignment = use_signal(|| 0u32);
     let mut random_access = use_signal(|| false);
+    let mut compatibility = use_signal(Compatibility::default);
     let mut dz_options = use_signal(DzCompressionOptions::default);
     let mut editing_source = use_signal(|| None::<String>);
     let next_id = use_signal(|| 1u64);
     let busy = use_signal(|| None::<String>);
     let mut toast = use_signal(|| None::<(bool, String)>);
+    let mut dragging_files = use_signal(|| false);
 
     let appearance_class = match appearance() {
         AppearanceMode::System => "theme-system",
         AppearanceMode::Light => "theme-light",
         AppearanceMode::Dark => "theme-dark dark",
     };
-    let theme_class = format!("app {appearance_class}");
+    let accepting_drop = dragging_files() && page() == WorkspacePage::Create;
+    let theme_class = format!(
+        "app {appearance_class}{}",
+        if accepting_drop {
+            " dragging-files"
+        } else {
+            ""
+        }
+    );
     let current_locale = locale();
     let i18n = I18n::new(current_locale);
     let busy_hint = i18n.t("busy-large-files");
@@ -172,6 +209,8 @@ fn App() -> Element {
     let clear_search = i18n.t("clear-search");
     let open_settings = i18n.t("open-settings");
     let settings_label = i18n.t("settings");
+    let drop_active_title = i18n.t("drop-active-title");
+    let drop_active_hint = i18n.t("drop-active-hint");
     let archive_label = archive
         .read()
         .as_ref()
@@ -182,10 +221,60 @@ fn App() -> Element {
         document::Stylesheet { href: MAIN_CSS }
         document::Title { "Dzip Archive" }
 
-        div { class: "{theme_class}",
+        div {
+            class: "{theme_class}",
+            ondragover: move |event| {
+                if page() == WorkspacePage::Create && file_drop::drag_has_files(&event) {
+                    event.prevent_default();
+                    dragging_files.set(true);
+                }
+            },
+            ondragleave: move |_| dragging_files.set(false),
+            ondrop: move |event| {
+                dragging_files.set(false);
+                if page() != WorkspacePage::Create || !file_drop::drag_has_files(&event) {
+                    return;
+                }
+                event.prevent_default();
+                let default_compression = compression();
+                spawn(async move {
+                    match add_dropped_files(event, draft_files, next_id, default_compression).await {
+                        Ok(0) => {
+                            let message = i18n.t("drop-no-files");
+                            append_log(logs, "WARN", &message);
+                            toast.set(Some((false, message)));
+                        }
+                        Ok(count) => {
+                            let message = i18n.t_args(
+                                "dropped-files",
+                                &[("count", count.to_string())],
+                            );
+                            append_log(logs, "INFO", &message);
+                            toast.set(Some((true, message)));
+                        }
+                        Err(error) => {
+                            let message = i18n.t_args("drop-error", &[("error", error)]);
+                            append_log(logs, "ERROR", &message);
+                            toast.set(Some((false, message)));
+                        }
+                    }
+                });
+            },
             div { class: "ambient ambient-one" }
             div { class: "ambient ambient-two" }
             div { class: "ambient ambient-three" }
+
+            if accepting_drop {
+                div { class: "file-drop-indicator", aria_hidden: "true",
+                    span { class: "file-drop-indicator-icon",
+                        Icon { name: IconName::CloudUpload, size: 17 }
+                    }
+                    div {
+                        strong { "{drop_active_title}" }
+                        span { "{drop_active_hint}" }
+                    }
+                }
+            }
 
             aside { class: "sidebar glass-panel",
                 div { class: "brand",
@@ -217,6 +306,7 @@ fn App() -> Element {
                                     archive_name.set("game-assets.dz".to_string());
                                     alignment.set(0);
                                     random_access.set(false);
+                                    compatibility.set(Compatibility::Original);
                                     dz_options.set(DzCompressionOptions::default());
                                     editing_source.set(None);
                                 }
@@ -289,6 +379,7 @@ fn App() -> Element {
                                 archive_name: archive_name,
                                 alignment: alignment,
                                 random_access: random_access,
+                                compatibility: compatibility,
                                 dz_options: dz_options,
                                 editing_source: editing_source,
                                 logs: logs,
@@ -299,6 +390,7 @@ fn App() -> Element {
                                     archive_name.set("game-assets.dz".to_string());
                                     alignment.set(0);
                                     random_access.set(false);
+                                    compatibility.set(Compatibility::Original);
                                     dz_options.set(DzCompressionOptions::default());
                                     editing_source.set(None);
                                     page.set(WorkspacePage::Create);
@@ -312,6 +404,7 @@ fn App() -> Element {
                                 archive_name: archive_name,
                                 alignment: alignment,
                                 random_access: random_access,
+                                compatibility: compatibility,
                                 dz_options: dz_options,
                                 busy: busy,
                                 toast: toast,
@@ -762,6 +855,7 @@ fn BrowsePage(
     archive_name: Signal<String>,
     alignment: Signal<u32>,
     random_access: Signal<bool>,
+    compatibility: Signal<Compatibility>,
     dz_options: Signal<DzCompressionOptions>,
     editing_source: Signal<Option<String>>,
     logs: Signal<Vec<String>>,
@@ -775,6 +869,7 @@ fn BrowsePage(
     let empty_description = i18n.t("empty-open-description");
     let select_archive = i18n.t("choose-dz-files");
     let create_archive = i18n.t("create-new-archive");
+    let compatibility_mode = i18n.t("compatibility-mode");
     let Some(archive_value) = archive.read().as_ref().cloned() else {
         return rsx! {
             div { class: "empty-state glass-card",
@@ -791,6 +886,10 @@ fn BrowsePage(
                 }
                 h1 { "{empty_title}" }
                 p { "{empty_description}" }
+                div { class: "open-compatibility",
+                    span { class: "field-label", "{compatibility_mode}" }
+                    CompatibilitySelector { compatibility }
+                }
                 div { class: "empty-actions",
                     label { class: "button primary large file-action",
                         Icon { name: IconName::FolderOpen, size: 19 }
@@ -834,7 +933,12 @@ fn BrowsePage(
                                         lower.ends_with(".dz") || lower.ends_with(".dzip")
                                     }).unwrap_or(0);
                                     let (main_name, main_bytes) = loaded.remove(main_index);
-                                    match open_archive(main_name.clone(), main_bytes, loaded) {
+                                    match open_archive(
+                                        main_name.clone(),
+                                        main_bytes,
+                                        loaded,
+                                        compatibility(),
+                                    ) {
                                         Ok(value) => {
                                             focused_entry.set(None);
                                             archive.set(Some(value));
@@ -1023,6 +1127,7 @@ fn BrowsePage(
                                     archive_name.set(source_name.clone());
                                     alignment.set(0);
                                     random_access.set(false);
+                                    compatibility.set(archive_value.compatibility);
                                     dz_options.set(archive_value.dz_options);
                                     editing_source.set(Some(source_name.clone()));
                                     page.set(WorkspacePage::Create);
@@ -1228,6 +1333,7 @@ fn CreatePage(
     archive_name: Signal<String>,
     alignment: Signal<u32>,
     random_access: Signal<bool>,
+    compatibility: Signal<Compatibility>,
     mut dz_options: Signal<DzCompressionOptions>,
     busy: Signal<Option<String>>,
     toast: Signal<Option<(bool, String)>>,
@@ -1247,6 +1353,7 @@ fn CreatePage(
         .map(|file| file.bytes.len() as u64)
         .sum();
     let current_compression = compression();
+    let current_compatibility = compatibility();
     let current_dz_options = dz_options();
     let has_dz_entries = draft_files
         .read()
@@ -1289,6 +1396,7 @@ fn CreatePage(
     let archive_settings = i18n.t("archive-settings");
     let per_file_hint = i18n.t("per-file-hint");
     let archive_name_label = i18n.t("archive-name");
+    let compatibility_mode = i18n.t("compatibility-mode");
     let default_algorithm = i18n.t("default-algorithm");
     let apply_all = i18n.t("apply-all");
     let alignment_label = i18n.t("data-alignment");
@@ -1339,9 +1447,21 @@ fn CreatePage(
                     let dz = dz_options();
                     async move {
                         busy.set(Some(i18n.t("compressing-files")));
-                        match build_archive(&files, &name, align, random, dz) {
+                        match build_archive(
+                            &files,
+                            &name,
+                            align,
+                            random,
+                            current_compatibility,
+                            dz,
+                        ) {
                             Ok(bytes) => {
-                                let reopened = open_archive(name.clone(), bytes.clone(), Vec::new());
+                                let reopened = open_archive(
+                                    name.clone(),
+                                    bytes.clone(),
+                                    Vec::new(),
+                                    current_compatibility,
+                                );
                                 busy.set(Some(i18n.t("saving-archive")));
                                 match platform::save_bytes(&name, bytes).await {
                                     Ok(_) => {
@@ -1422,14 +1542,6 @@ fn CreatePage(
 
                 if draft_files.read().is_empty() {
                     label { class: "drop-zone",
-                        ondragover: move |event| event.prevent_default(),
-                        ondrop: move |event| {
-                            event.prevent_default();
-                            let files = event.files();
-                            async move {
-                                add_uploaded_files(files, draft_files, next_id, current_compression, true).await;
-                            }
-                        },
                         div { class: "drop-icon", Icon { name: IconName::CloudUpload, size: 31 } }
                         strong { "{drop_title}" }
                         span { "{drop_hint}" }
@@ -1511,6 +1623,9 @@ fn CreatePage(
                         oninput: move |event| archive_name.set(event.value()),
                     }
                 }
+
+                label { class: "field-label", "{compatibility_mode}" }
+                CompatibilitySelector { compatibility }
 
                 div { class: "field-label row-label",
                     span { "{default_algorithm}" }
@@ -1748,6 +1863,47 @@ fn CreatePage(
 }
 
 #[component]
+fn CompatibilitySelector(mut compatibility: Signal<Compatibility>) -> Element {
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
+    let current = compatibility();
+    let compatibility_label = i18n.t("compatibility-mode");
+    const OPTIONS: [Compatibility; 2] = [Compatibility::Original, Compatibility::Strict];
+
+    rsx! {
+        div { class: "compatibility-grid", role: "radiogroup", aria_label: compatibility_label,
+            for option in OPTIONS {
+                {
+                    let (label_key, description_key) = match option {
+                        Compatibility::Original => (
+                            "compatibility-original",
+                            "compatibility-original-description",
+                        ),
+                        Compatibility::Strict => (
+                            "compatibility-strict",
+                            "compatibility-strict-description",
+                        ),
+                    };
+                    let active = option == current;
+                    rsx! {
+                        button {
+                            class: if active { "compatibility-option active" } else { "compatibility-option" },
+                            r#type: "button",
+                            role: "radio",
+                            aria_checked: if active { "true" } else { "false" },
+                            onclick: move |_| compatibility.set(option),
+                            span { class: "radio-dot" }
+                            strong { "{i18n.t(label_key)}" }
+                            small { "{i18n.t(description_key)}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn CompressionPicker(
     file_id: u64,
     file_path: String,
@@ -1964,6 +2120,27 @@ async fn add_uploaded_files(
             });
         }
     }
+}
+
+async fn add_dropped_files(
+    event: DragEvent,
+    mut draft_files: Signal<Vec<DraftFile>>,
+    mut next_id: Signal<u64>,
+    default_compression: CompressionChoice,
+) -> Result<usize, String> {
+    let files = file_drop::read_dropped_files(&event).await?;
+    let count = files.len();
+    for file in files {
+        let id = next_id();
+        next_id.set(id.saturating_add(1));
+        draft_files.write().push(DraftFile {
+            id,
+            path: file.path,
+            bytes: Arc::from(file.bytes),
+            compression: default_compression,
+        });
+    }
+    Ok(count)
 }
 
 fn upload_path(file: &FileData, common_root: Option<&std::path::Path>) -> String {

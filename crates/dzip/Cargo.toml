@@ -12,7 +12,7 @@ categories = ["compression", "encoding"]
 [dependencies]
 byteorder = "1.5"
 bzip = { version = "0.103.0", path = "../codecs/bzip", default-features = false, features = ["std"], optional = true }
-dz = { version = "0.4.0", path = "../codecs/dz", optional = true }
+dz = { version = "0.4.1", path = "../codecs/dz", optional = true }
 lzma = { version = "0.920.0", path = "../codecs/lzma", features = ["decode"], optional = true }
 rayon = { version = "1.12", optional = true }
 serde = { workspace = true, optional = true }
