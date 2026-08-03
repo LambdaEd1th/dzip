@@ -3314,6 +3314,7 @@ input[type="checkbox"]:not(.visually-hidden) {
   .draft-actions .button {
     width: 35px;
     min-height: 35px;
+    gap: 0;
     padding: 0;
   }
 
