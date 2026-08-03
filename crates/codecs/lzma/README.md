@@ -5,7 +5,7 @@ This is a local pure-Rust fork of `lzma-sdk-rs` 0.2301.1, upstream commit
 SDK 23.01. This fork retargets the match finder, optimal parser, price-refresh
 cadence, and end-marker path to LZMA SDK 9.20.
 
-For dzip 1.1.3, the encoder is used with `lc=3`, `lp=0`, `pb=2`, a 64 KiB
+For `dzip.exe`, the encoder is used with `lc=3`, `lp=0`, `pb=2`, a 64 KiB
 dictionary, `fb=32`, `mc=32`, and `writeEndMark=1`. Its output was checked
 byte-for-byte against the SDK 9.20 C encoder over empty, structured,
 boundary-sized, and high-entropy inputs through 100,000 bytes.

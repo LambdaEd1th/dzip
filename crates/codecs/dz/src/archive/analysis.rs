@@ -385,7 +385,7 @@ pub(crate) fn find_common_references(
             });
         }
     }
-    // The common-tree traversal in dzip 1.1.3 visits the final source byte
+    // The common-tree traversal in dzip.exe visits the final source byte
     // twice before writing the last END marker. It is harmless to decoding
     // (no later source begins there), but it participates in both static
     // frequency analysis and the final range stream.

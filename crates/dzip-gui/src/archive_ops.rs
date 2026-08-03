@@ -2,8 +2,8 @@ use crate::model::{CompressionChoice, DraftFile, DzCompressionOptions, EntryView
 #[cfg(any(feature = "web", test))]
 use crc32fast::Hasher;
 use dzip::{
-    Archive, ArchiveBuilder, Compression, DzOptions, EntryId, EntryOptions, MemoryVolumeSource,
-    PackOptions, RangeSettings,
+    Archive, ArchiveBuilder, Compatibility, Compression, DzOptions, EntryId, EntryOptions,
+    MemoryVolumeSource, PackOptions, RangeSettings, ReadOptions,
 };
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -16,6 +16,7 @@ pub fn open_archive(
     main_name: String,
     main_bytes: Vec<u8>,
     auxiliary_files: Vec<(String, Vec<u8>)>,
+    compatibility: Compatibility,
 ) -> Result<LoadedArchive, String> {
     let main_bytes: Arc<[u8]> = Arc::from(main_bytes);
     let mut auxiliary_files = auxiliary_files;
@@ -26,9 +27,13 @@ pub fn open_archive(
         .map(|(index, (_, bytes))| ((index + 1) as u16, bytes))
         .collect();
 
-    let archive = Archive::open_with_volumes(
+    let archive = Archive::open_with_options(
         Cursor::new(main_bytes.clone()),
         MemoryVolumeSource::new(auxiliary.clone()),
+        ReadOptions {
+            compatibility,
+            ..ReadOptions::default()
+        },
     )
     .map_err(|error| format!("无法读取归档：{error}"))?;
 
@@ -99,6 +104,7 @@ pub fn open_archive(
         main_bytes,
         auxiliary: Arc::new(auxiliary),
         entries: Arc::new(entries),
+        compatibility,
         dz_options,
         source_size,
         unpacked_size,
@@ -111,9 +117,13 @@ pub fn read_entries(
     archive: &LoadedArchive,
     entry_ids: &[usize],
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let mut reader = Archive::open_with_volumes(
+    let mut reader = Archive::open_with_options(
         Cursor::new(archive.main_bytes.clone()),
         MemoryVolumeSource::new(archive.auxiliary.iter().cloned()),
+        ReadOptions {
+            compatibility: archive.compatibility,
+            ..ReadOptions::default()
+        },
     )
     .map_err(|error| format!("无法重新打开归档：{error}"))?;
 
@@ -136,6 +146,7 @@ pub fn build_archive(
     archive_name: &str,
     alignment: u32,
     random_access: bool,
+    compatibility: Compatibility,
     dz_options: DzCompressionOptions,
 ) -> Result<Vec<u8>, String> {
     if files.is_empty() {
@@ -160,7 +171,7 @@ pub fn build_archive(
     let mut builder = ArchiveBuilder::with_options(PackOptions {
         volume_names: vec![normalise_archive_name(archive_name)],
         alignment,
-        compatibility: dzip::Compatibility::Dzip,
+        compatibility,
         dz: DzOptions {
             settings,
             max_mem_usage: dz_options.max_mem_usage,
@@ -366,10 +377,17 @@ mod tests {
             "gui-test.dz",
             0,
             false,
+            Compatibility::Original,
             DzCompressionOptions::default(),
         )
         .unwrap();
-        let archive = open_archive("gui-test.dz".into(), bytes, Vec::new()).unwrap();
+        let archive = open_archive(
+            "gui-test.dz".into(),
+            bytes,
+            Vec::new(),
+            Compatibility::Original,
+        )
+        .unwrap();
         assert_eq!(archive.entries.len(), 2);
         assert_eq!(archive.entries[0].path, "Data/hello.txt");
         assert_eq!(
@@ -408,8 +426,22 @@ mod tests {
             ..DzCompressionOptions::default()
         };
 
-        let bytes = build_archive(&draft, "dz-options.dz", 0, false, options).unwrap();
-        let archive = open_archive("dz-options.dz".into(), bytes, Vec::new()).unwrap();
+        let bytes = build_archive(
+            &draft,
+            "dz-options.dz",
+            0,
+            false,
+            Compatibility::Original,
+            options,
+        )
+        .unwrap();
+        let archive = open_archive(
+            "dz-options.dz".into(),
+            bytes,
+            Vec::new(),
+            Compatibility::Original,
+        )
+        .unwrap();
 
         assert!(!archive.dz_options.combuf_static_tables);
         assert_eq!(archive.dz_options.win_size, 12);
@@ -436,7 +468,78 @@ mod tests {
             ..DzCompressionOptions::default()
         };
 
-        let error = build_archive(&draft, "memory-limit.dz", 0, false, options).unwrap_err();
+        let error = build_archive(
+            &draft,
+            "memory-limit.dz",
+            0,
+            false,
+            Compatibility::Original,
+            options,
+        )
+        .unwrap_err();
         assert!(error.contains("max_mem_usage"));
+    }
+
+    #[test]
+    fn gui_honors_original_and_strict_compatibility_modes() {
+        let draft = vec![DraftFile {
+            id: 1,
+            path: "Data/repeated.txt".into(),
+            bytes: Arc::from(b"strict compatibility payload\n".repeat(256)),
+            compression: CompressionChoice::Zlib,
+        }];
+
+        let strict_bytes = build_archive(
+            &draft,
+            "strict.dz",
+            0,
+            false,
+            Compatibility::Strict,
+            DzCompressionOptions::default(),
+        )
+        .unwrap();
+        let strict_archive = open_archive(
+            "strict.dz".into(),
+            strict_bytes,
+            Vec::new(),
+            Compatibility::Strict,
+        )
+        .unwrap();
+        assert_eq!(strict_archive.compatibility, Compatibility::Strict);
+        assert_eq!(
+            read_entries(&strict_archive, &[strict_archive.entries[0].id]).unwrap()[0].1,
+            draft[0].bytes.as_ref()
+        );
+
+        let original_bytes = build_archive(
+            &draft,
+            "legacy.dz",
+            0,
+            false,
+            Compatibility::Original,
+            DzCompressionOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            open_archive(
+                "legacy.dz".into(),
+                original_bytes.clone(),
+                Vec::new(),
+                Compatibility::Strict,
+            )
+            .is_err()
+        );
+        let original_archive = open_archive(
+            "legacy.dz".into(),
+            original_bytes,
+            Vec::new(),
+            Compatibility::Original,
+        )
+        .unwrap();
+        assert_eq!(original_archive.compatibility, Compatibility::Original);
+        assert_eq!(
+            read_entries(&original_archive, &[original_archive.entries[0].id]).unwrap()[0].1,
+            draft[0].bytes.as_ref()
+        );
     }
 }

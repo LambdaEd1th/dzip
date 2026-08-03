@@ -188,7 +188,7 @@ impl ChunkEncoding {
         | CHUNK_LZMA
         | CHUNK_RANDOMACCESS;
 
-    /// Interpret the storage bits using dzip.exe 1.1.3's packer registration
+    /// Interpret the storage bits using dzip.exe's packer registration
     /// order. MP3, JPEG, and random-access are orthogonal metadata and never
     /// select a codec by themselves.
     ///

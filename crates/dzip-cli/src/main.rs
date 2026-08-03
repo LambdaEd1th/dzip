@@ -38,7 +38,7 @@ enum Commands {
         /// The output directory
         #[arg(short, long, default_value = ".")]
         output: String,
-        /// Extra Dzip 1.1.3 DCL commands applied after the configuration file
+        /// Extra dzip.exe DCL commands applied after the configuration file
         #[arg(short = 'c', long = "command")]
         command: Vec<String>,
     },

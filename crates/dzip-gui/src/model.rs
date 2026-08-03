@@ -25,6 +25,7 @@ pub struct LoadedArchive {
     pub main_bytes: Arc<[u8]>,
     pub auxiliary: Arc<Vec<(u16, Vec<u8>)>>,
     pub entries: Arc<Vec<EntryView>>,
+    pub compatibility: dzip::Compatibility,
     pub dz_options: DzCompressionOptions,
     pub source_size: u64,
     pub unpacked_size: u64,
@@ -44,7 +45,7 @@ pub struct DraftFile {
 ///
 /// `max_common_match == 0` represents the engine's unlimited setting. The
 /// static-table flag is exposed separately because the other on-disk flag is
-/// rejected by Dzip 1.1.3.
+/// rejected by dzip.exe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DzCompressionOptions {
     pub max_mem_usage: i32,

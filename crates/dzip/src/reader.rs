@@ -299,7 +299,7 @@ impl<R: Read + Seek> DzipReader<R> {
         }
 
         reader.seek(std::io::SeekFrom::Start(chunk.offset as u64))?;
-        // Dzip 1.1.3's copy decoder tracks the uncompressed byte count and
+        // dzip.exe's copy decoder tracks the uncompressed byte count and
         // ignores the stored compressed-length field. Valid copy chunks have
         // equal lengths, but using the original field preserves compatibility
         // with malformed legacy headers.
@@ -406,7 +406,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn copy_chunks_use_decompressed_length_like_dzip_113() {
+    fn copy_chunks_use_decompressed_length_like_dzip_original() {
         let mut reader = DzipReader::new(Cursor::new(b"payload".to_vec()));
         let chunk = Chunk {
             offset: 0,

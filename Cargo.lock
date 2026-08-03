@@ -1684,11 +1684,11 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dz"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "dzip"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "byteorder",
  "bzip",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "dzip-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "clap",
  "dzip",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "dzip-gui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "dioxus",
@@ -1725,6 +1725,7 @@ dependencies = [
  "rfd",
  "unic-langid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

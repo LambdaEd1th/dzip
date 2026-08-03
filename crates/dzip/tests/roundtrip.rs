@@ -160,7 +160,7 @@ fn test_lzma_round_trip() {
 }
 
 #[test]
-fn external_codec_headers_match_dzip_1_1_3() {
+fn external_codec_headers_match_dzip_original() {
     use dzip::Compression;
     use dzip::writer::compress_data;
 

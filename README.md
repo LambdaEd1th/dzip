@@ -6,7 +6,7 @@ Pure-Rust support for reading, extracting, creating, and inspecting Dzip
 archives. The workspace contains the reusable `dzip` library and the
 `dzip-cli` command-line application.
 
-The implementation is compatible with Dzip 1.1.3, including split volumes,
+The implementation is compatible with `dzip.exe`, including split volumes,
 native DZ compression and COMBUF references, Bzip, LZMA SDK 9.20 output, and
 the original program's unusual truncated-gzip framing.
 
@@ -72,7 +72,7 @@ writer remain available for inspection and reverse-engineering tools.
 
 ### Compatibility and safety
 
-`Compatibility::Dzip` is the default. It reproduces original writer quirks
+`Compatibility::Original` is the default. It reproduces original writer quirks
 and repairs known incorrect physical-length fields while reading.
 `Compatibility::Strict` rejects those malformed fields and unsafe zero-chunk
 requests.
@@ -115,7 +115,7 @@ dzip-cli create game_data.dz Data/config.bin Images/logo.png \
 ```
 
 The CLI is defined entirely with Clap derive. `build` accepts TOML manifests
-and the legacy Dzip 1.1.3 `.dcl` syntax, while `create` provides a typed direct
+and the legacy `dzip.exe` `.dcl` syntax, while `create` provides a typed direct
 creation workflow without the original executable's order-dependent argument
 state. `extract` writes files only; it does not generate a repack manifest.
 

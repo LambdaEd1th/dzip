@@ -106,7 +106,7 @@ fn native_fixtures_repack_byte_exact_and_extract() {
 }
 
 #[test]
-fn lzma_chunk_table_matches_dzip_1_1_3() {
+fn lzma_chunk_table_matches_dzip_original() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -184,7 +184,7 @@ compression = "Lzma"
 }
 
 #[test]
-fn framed_codec_chunk_lengths_match_dzip_1_1_3() {
+fn framed_codec_chunk_lengths_match_dzip_original() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -269,7 +269,7 @@ compression = "Lzma"
 }
 
 #[test]
-fn directory_ids_are_case_insensitive_like_dzip_1_1_3() {
+fn directory_ids_are_case_insensitive_like_dzip_original() {
     let root = unique_temp_dir("case-fold");
     let packed = root.join("packed");
     std::fs::create_dir_all(root.join("Foo")).unwrap();
