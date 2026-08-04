@@ -1,5 +1,29 @@
+use dzip_gui::model::{CompressionChoice, DzCompressionOptions};
+use serde::{Deserialize, Serialize};
+
 const THEME_KEY: &str = "theme";
 const LOCALE_KEY: &str = "locale";
+const ARCHIVE_PREFERENCES_KEY: &str = "archive-preferences";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArchivePreferences {
+    pub compression: CompressionChoice,
+    pub alignment: u32,
+    pub random_access: bool,
+    pub dz_options: DzCompressionOptions,
+}
+
+impl Default for ArchivePreferences {
+    fn default() -> Self {
+        Self {
+            compression: CompressionChoice::Dz,
+            alignment: 0,
+            random_access: false,
+            dz_options: DzCompressionOptions::default(),
+        }
+    }
+}
 
 pub fn read_theme() -> Option<String> {
     read_preference(THEME_KEY)
@@ -15,6 +39,67 @@ pub fn read_locale() -> Option<String> {
 
 pub fn save_locale(value: &str) -> Result<(), String> {
     save_preference(LOCALE_KEY, value)
+}
+
+pub fn read_archive_preferences() -> ArchivePreferences {
+    read_preference(ARCHIVE_PREFERENCES_KEY)
+        .as_deref()
+        .and_then(decode_archive_preferences)
+        .unwrap_or_default()
+}
+
+pub fn save_archive_preferences(value: &ArchivePreferences) -> Result<(), String> {
+    let value = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    save_preference(ARCHIVE_PREFERENCES_KEY, &value)
+}
+
+fn decode_archive_preferences(value: &str) -> Option<ArchivePreferences> {
+    serde_json::from_str(value)
+        .ok()
+        .map(sanitize_archive_preferences)
+}
+
+fn sanitize_archive_preferences(mut value: ArchivePreferences) -> ArchivePreferences {
+    let defaults = ArchivePreferences::default();
+    if !matches!(value.alignment, 0 | 512 | 2048 | 4096) {
+        value.alignment = defaults.alignment;
+    }
+    let options = &mut value.dz_options;
+    let default_options = defaults.dz_options;
+    if options.win_size > 30 {
+        options.win_size = default_options.win_size;
+    }
+    if !(1..=15).contains(&options.offset_table_size) {
+        options.offset_table_size = default_options.offset_table_size;
+    }
+    if options.offset_tables == 0 {
+        options.offset_tables = default_options.offset_tables;
+    }
+    if !(1..=8).contains(&options.offset_contexts) {
+        options.offset_contexts = default_options.offset_contexts;
+    }
+
+    let minimum_reference_value = u8::from(options.use_combuf);
+    if !(minimum_reference_value..=15).contains(&options.ref_length_table_size) {
+        options.ref_length_table_size = default_options.ref_length_table_size;
+    }
+    if options.ref_length_tables < minimum_reference_value {
+        options.ref_length_tables = default_options.ref_length_tables;
+    }
+    if !(minimum_reference_value..=15).contains(&options.ref_offset_table_size) {
+        options.ref_offset_table_size = default_options.ref_offset_table_size;
+    }
+    if options.ref_offset_tables < minimum_reference_value {
+        options.ref_offset_tables = default_options.ref_offset_tables;
+    }
+    if options.big_min_match < minimum_reference_value {
+        options.big_min_match = default_options.big_min_match;
+    }
+    if options.use_combuf {
+        options.combuf_static_tables = true;
+    }
+
+    value
 }
 
 #[cfg(feature = "desktop")]
@@ -77,4 +162,45 @@ fn save_preference(key: &str, value: &str) -> Result<(), String> {
 #[cfg(feature = "web")]
 fn web_key(key: &str) -> String {
     format!("dzip-archive-{key}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_preferences_round_trip() {
+        let mut expected = ArchivePreferences {
+            compression: CompressionChoice::Lzma,
+            alignment: 2048,
+            random_access: true,
+            dz_options: DzCompressionOptions::default(),
+        };
+        expected.dz_options.win_size = 18;
+        expected.dz_options.trim_reference_factor = 42;
+
+        let encoded = serde_json::to_string(&expected).unwrap();
+        assert_eq!(decode_archive_preferences(&encoded), Some(expected));
+    }
+
+    #[test]
+    fn invalid_archive_preferences_are_rejected_or_sanitized() {
+        assert_eq!(decode_archive_preferences("not json"), None);
+
+        let stored = ArchivePreferences {
+            alignment: 7,
+            dz_options: DzCompressionOptions {
+                win_size: 31,
+                offset_contexts: 0,
+                ..DzCompressionOptions::default()
+            },
+            ..ArchivePreferences::default()
+        };
+        let encoded = serde_json::to_string(&stored).unwrap();
+        let decoded = decode_archive_preferences(&encoded).unwrap();
+
+        assert_eq!(decoded.alignment, 0);
+        assert_eq!(decoded.dz_options.win_size, 16);
+        assert_eq!(decoded.dz_options.offset_contexts, 3);
+    }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspacePage {
     Browse,
-    Create,
+    Editor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +39,7 @@ pub struct DraftFile {
     pub path: String,
     pub bytes: Arc<[u8]>,
     pub compression: CompressionChoice,
+    pub volume: u16,
 }
 
 /// Archive-wide settings used by the native DZ encoder.

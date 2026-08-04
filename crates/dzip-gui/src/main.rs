@@ -37,14 +37,89 @@ struct FolderView {
     path: String,
     file_count: usize,
     size: u64,
-    packed_size: u64,
+    packed_size: Option<u64>,
+    volume: Option<u16>,
     entry_ids: Vec<usize>,
+}
+
+trait BrowserItem: Clone {
+    fn browser_path(&self) -> &str;
+    fn browser_size(&self) -> u64;
+    fn browser_packed_size(&self) -> Option<u64>;
+    fn browser_volume(&self) -> u16;
+    fn browser_entry_id(&self) -> Option<usize>;
+}
+
+impl BrowserItem for EntryView {
+    fn browser_path(&self) -> &str {
+        &self.path
+    }
+
+    fn browser_size(&self) -> u64 {
+        self.size
+    }
+
+    fn browser_packed_size(&self) -> Option<u64> {
+        Some(self.packed_size)
+    }
+
+    fn browser_volume(&self) -> u16 {
+        self.volume
+    }
+
+    fn browser_entry_id(&self) -> Option<usize> {
+        Some(self.id)
+    }
+}
+
+impl BrowserItem for DraftFile {
+    fn browser_path(&self) -> &str {
+        &self.path
+    }
+
+    fn browser_size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn browser_packed_size(&self) -> Option<u64> {
+        None
+    }
+
+    fn browser_volume(&self) -> u16 {
+        self.volume
+    }
+
+    fn browser_entry_id(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserCrumb {
     name: String,
     path: String,
+}
+
+type NamedFileBytes = (String, Vec<u8>);
+type PreparedArchiveFiles = (String, Vec<u8>, Vec<NamedFileBytes>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArchiveEditorMode {
+    New,
+    Existing { source_name: String },
+}
+
+impl ArchiveEditorMode {
+    fn source_name(&self) -> Option<&str> {
+        match self {
+            Self::New => None,
+            Self::Existing { source_name } => Some(source_name),
+        }
+    }
+
+    fn is_new(&self) -> bool {
+        matches!(self, Self::New)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +150,16 @@ impl AppearanceMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenSelectMenu {
     Compression(u64),
+    Volume(u64),
     Alignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DroppedArchiveError {
+    NoMainArchive,
+    MultipleMainArchives,
+    Read(String),
+    Open(String),
 }
 
 fn append_log(mut logs: Signal<Vec<String>>, level: &str, message: impl Into<String>) {
@@ -117,6 +201,42 @@ fn alignment_option_label(value: u32, i18n: I18n) -> String {
     })
 }
 
+fn volume_option_label(value: u16, i18n: I18n) -> String {
+    if value == 0 {
+        i18n.t("main-volume")
+    } else {
+        i18n.t_args("volume-value", &[("number", value.to_string())])
+    }
+}
+
+fn reveal_draft_menu(file_id: u64) {
+    dioxus::document::eval(&format!(
+        r#"
+        requestAnimationFrame(() => requestAnimationFrame(() => {{
+            const row = document.getElementById('draft-row-{file_id}');
+            if (!row) return;
+
+            row.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+            const picker = row.querySelector('.compression-picker.open');
+            const menu = picker?.querySelector('.compression-menu');
+            const trigger = picker?.querySelector('.compression-trigger');
+            if (!menu || !trigger) return;
+
+            menu.classList.remove('drop-up');
+            const triggerRect = trigger.getBoundingClientRect();
+            const menuHeight = Math.min(menu.scrollHeight, 226);
+            const viewportPadding = 12;
+            const spaceBelow = window.innerHeight - triggerRect.bottom - viewportPadding;
+            const spaceAbove = triggerRect.top - viewportPadding;
+            menu.classList.toggle(
+                'drop-up',
+                spaceBelow < menuHeight && spaceAbove > spaceBelow,
+            );
+        }}));
+        "#
+    ));
+}
+
 fn main() {
     dioxus::launch(App);
 }
@@ -144,6 +264,25 @@ fn use_web_file_drop_guard() {
     });
 }
 
+fn reset_archive_editor(
+    mut draft_files: Signal<Vec<DraftFile>>,
+    mut compression: Signal<CompressionChoice>,
+    mut archive_name: Signal<String>,
+    mut alignment: Signal<u32>,
+    mut random_access: Signal<bool>,
+    mut dz_options: Signal<DzCompressionOptions>,
+    mut editor_mode: Signal<ArchiveEditorMode>,
+) {
+    let stored = preferences::read_archive_preferences();
+    draft_files.write().clear();
+    compression.set(stored.compression);
+    archive_name.set("game-assets.dz".to_string());
+    alignment.set(stored.alignment);
+    random_access.set(stored.random_access);
+    dz_options.set(stored.dz_options);
+    editor_mode.set(ArchiveEditorMode::New);
+}
+
 #[component]
 fn App() -> Element {
     app_i18n::load_i18n_sources();
@@ -168,24 +307,44 @@ fn App() -> Element {
     let mut focused_entry = use_signal(|| None::<usize>);
     let mut search = use_signal(String::new);
     let mut browse_path = use_signal(String::new);
-    let mut draft_files = use_signal(Vec::<DraftFile>::new);
-    let mut compression = use_signal(|| CompressionChoice::Dz);
-    let mut archive_name = use_signal(|| "game-assets.dz".to_string());
-    let mut alignment = use_signal(|| 0u32);
-    let mut random_access = use_signal(|| false);
-    let mut dz_options = use_signal(DzCompressionOptions::default);
-    let mut editing_source = use_signal(|| None::<String>);
+    let draft_files = use_signal(Vec::<DraftFile>::new);
+    let initial_archive_preferences = use_hook(preferences::read_archive_preferences);
+    let initial_compression = initial_archive_preferences.compression;
+    let initial_alignment = initial_archive_preferences.alignment;
+    let initial_random_access = initial_archive_preferences.random_access;
+    let initial_dz_options = initial_archive_preferences.dz_options;
+    let compression = use_signal(move || initial_compression);
+    let archive_name = use_signal(|| "game-assets.dz".to_string());
+    let alignment = use_signal(move || initial_alignment);
+    let random_access = use_signal(move || initial_random_access);
+    let dz_options = use_signal(move || initial_dz_options);
+    let editor_mode = use_signal(|| ArchiveEditorMode::New);
     let next_id = use_signal(|| 1u64);
     let busy = use_signal(|| None::<String>);
     let mut toast = use_signal(|| None::<(bool, String)>);
     let mut dragging_files = use_signal(|| false);
+
+    use_effect(move || {
+        let preferences = preferences::ArchivePreferences {
+            compression: compression(),
+            alignment: alignment(),
+            random_access: random_access(),
+            dz_options: dz_options(),
+        };
+        if page() == WorkspacePage::Editor
+            && editor_mode.read().is_new()
+            && let Err(error) = preferences::save_archive_preferences(&preferences)
+        {
+            append_log(logs, "ERROR", format!("Archive preferences: {error}"));
+        }
+    });
 
     let appearance_class = match appearance() {
         AppearanceMode::System => "theme-system",
         AppearanceMode::Light => "theme-light",
         AppearanceMode::Dark => "theme-dark dark",
     };
-    let accepting_drop = dragging_files() && page() == WorkspacePage::Create;
+    let accepting_drop = dragging_files();
     let theme_class = format!(
         "app {appearance_class}{}",
         if accepting_drop {
@@ -201,25 +360,30 @@ fn App() -> Element {
     let primary_nav_label = i18n.t("primary-navigation");
     let archive_nav = i18n.t("nav-archive");
     let archive_nav_hint = i18n.t("nav-archive-hint");
-    let create_nav = i18n.t("nav-create");
-    let create_nav_hint = i18n.t("nav-create-hint");
+    let editor_nav = i18n.t("nav-editor");
+    let editor_nav_hint = i18n.t("nav-editor-hint");
     let page_title = match page() {
         WorkspacePage::Browse => i18n.t("page-archive-manager"),
-        WorkspacePage::Create if editing_source.read().is_some() => i18n.t("page-edit-archive"),
-        WorkspacePage::Create => i18n.t("page-create-archive"),
+        WorkspacePage::Editor => i18n.t("page-archive-editor"),
     };
     let search_archive = i18n.t("search-archive");
     let search_placeholder = i18n.t("search-placeholder");
     let clear_search = i18n.t("clear-search");
     let open_settings = i18n.t("open-settings");
     let settings_label = i18n.t("settings");
-    let drop_active_title = i18n.t("drop-active-title");
-    let drop_active_hint = i18n.t("drop-active-hint");
-    let archive_label = archive
-        .read()
-        .as_ref()
-        .map(|value| value.name.clone())
-        .unwrap_or_else(|| i18n.t("no-archive-open"));
+    let (drop_active_title, drop_active_hint) = if page() == WorkspacePage::Browse {
+        (i18n.t("drop-open-title"), i18n.t("drop-open-hint"))
+    } else {
+        (i18n.t("drop-active-title"), i18n.t("drop-active-hint"))
+    };
+    let archive_label = match page() {
+        WorkspacePage::Browse => archive
+            .read()
+            .as_ref()
+            .map(|value| value.name.clone())
+            .unwrap_or_else(|| i18n.t("no-archive-open")),
+        WorkspacePage::Editor => archive_name(),
+    };
 
     rsx! {
         document::Stylesheet { href: MAIN_CSS }
@@ -228,7 +392,7 @@ fn App() -> Element {
         div {
             class: "{theme_class}",
             ondragover: move |event| {
-                if page() == WorkspacePage::Create && file_drop::drag_has_files(&event) {
+                if file_drop::drag_has_files(&event) {
                     event.prevent_default();
                     dragging_files.set(true);
                 }
@@ -236,33 +400,71 @@ fn App() -> Element {
             ondragleave: move |_| dragging_files.set(false),
             ondrop: move |event| {
                 dragging_files.set(false);
-                if page() != WorkspacePage::Create || !file_drop::drag_has_files(&event) {
+                if !file_drop::drag_has_files(&event) {
                     return;
                 }
                 event.prevent_default();
-                let default_compression = compression();
-                spawn(async move {
-                    match add_dropped_files(event, draft_files, next_id, default_compression).await {
-                        Ok(0) => {
-                            let message = i18n.t("drop-no-files");
-                            append_log(logs, "WARN", &message);
-                            toast.set(Some((false, message)));
+                if page() == WorkspacePage::Editor {
+                    let default_compression = compression();
+                    spawn(async move {
+                        match add_dropped_files(event, draft_files, next_id, default_compression).await {
+                            Ok(0) => {
+                                let message = i18n.t("drop-no-files");
+                                append_log(logs, "WARN", &message);
+                                toast.set(Some((false, message)));
+                            }
+                            Ok(count) => {
+                                let message = i18n.t_args(
+                                    "dropped-files",
+                                    &[("count", count.to_string())],
+                                );
+                                append_log(logs, "INFO", &message);
+                                toast.set(Some((true, message)));
+                            }
+                            Err(error) => {
+                                let message = i18n.t_args("drop-error", &[("error", error)]);
+                                append_log(logs, "ERROR", &message);
+                                toast.set(Some((false, message)));
+                            }
                         }
-                        Ok(count) => {
-                            let message = i18n.t_args(
-                                "dropped-files",
-                                &[("count", count.to_string())],
-                            );
-                            append_log(logs, "INFO", &message);
-                            toast.set(Some((true, message)));
+                    });
+                } else {
+                    let mut busy = busy;
+                    busy.set(Some(i18n.t("reading-archive")));
+                    spawn(async move {
+                        match open_dropped_archive(event).await {
+                            Ok((main_name, value)) => {
+                                focused_entry.set(None);
+                                archive.set(Some(value));
+                                selected.write().clear();
+                                search.set(String::new());
+                                browse_path.set(String::new());
+                                let message = i18n.t_args(
+                                    "opened-archive",
+                                    &[("name", main_name)],
+                                );
+                                append_log(logs, "INFO", &message);
+                                toast.set(Some((true, message)));
+                            }
+                            Err(DroppedArchiveError::NoMainArchive) => {
+                                let message = i18n.t("drop-archive-no-main");
+                                append_log(logs, "WARN", &message);
+                                toast.set(Some((false, message)));
+                            }
+                            Err(DroppedArchiveError::MultipleMainArchives) => {
+                                let message = i18n.t("drop-archive-multiple-main");
+                                append_log(logs, "WARN", &message);
+                                toast.set(Some((false, message)));
+                            }
+                            Err(DroppedArchiveError::Read(error) | DroppedArchiveError::Open(error)) => {
+                                let message = i18n.t_args("drop-open-error", &[("error", error)]);
+                                append_log(logs, "ERROR", &message);
+                                toast.set(Some((false, message)));
+                            }
                         }
-                        Err(error) => {
-                            let message = i18n.t_args("drop-error", &[("error", error)]);
-                            append_log(logs, "ERROR", &message);
-                            toast.set(Some((false, message)));
-                        }
-                    }
-                });
+                        busy.set(None);
+                    });
+                }
             },
             div { class: "ambient ambient-one" }
             div { class: "ambient ambient-two" }
@@ -298,24 +500,11 @@ fn App() -> Element {
                         onclick: move |_| page.set(WorkspacePage::Browse),
                     }
                     NavButton {
-                        active: page() == WorkspacePage::Create,
+                        active: page() == WorkspacePage::Editor,
                         icon: IconName::PackagePlus,
-                        label: create_nav,
-                        hint: create_nav_hint,
-                        onclick: move |_| {
-                            if page() != WorkspacePage::Create {
-                                if editing_source.read().is_some() {
-                                    draft_files.write().clear();
-                                    compression.set(CompressionChoice::Dz);
-                                    archive_name.set("game-assets.dz".to_string());
-                                    alignment.set(0);
-                                    random_access.set(false);
-                                    dz_options.set(DzCompressionOptions::default());
-                                    editing_source.set(None);
-                                }
-                                page.set(WorkspacePage::Create);
-                            }
-                        },
+                        label: editor_nav,
+                        hint: editor_nav_hint,
+                        onclick: move |_| page.set(WorkspacePage::Editor),
                     }
                 }
 
@@ -383,23 +572,25 @@ fn App() -> Element {
                                 alignment: alignment,
                                 random_access: random_access,
                                 dz_options: dz_options,
-                                editing_source: editing_source,
+                                editor_mode: editor_mode,
                                 logs: logs,
                                 page: page,
-                                on_create: move |_| {
-                                    draft_files.write().clear();
-                                    compression.set(CompressionChoice::Dz);
-                                    archive_name.set("game-assets.dz".to_string());
-                                    alignment.set(0);
-                                    random_access.set(false);
-                                    dz_options.set(DzCompressionOptions::default());
-                                    editing_source.set(None);
-                                    page.set(WorkspacePage::Create);
+                                on_new: move |_| {
+                                    reset_archive_editor(
+                                        draft_files,
+                                        compression,
+                                        archive_name,
+                                        alignment,
+                                        random_access,
+                                        dz_options,
+                                        editor_mode,
+                                    );
+                                    page.set(WorkspacePage::Editor);
                                 },
                             }
                         },
-                        WorkspacePage::Create => rsx! {
-                            CreatePage {
+                        WorkspacePage::Editor => rsx! {
+                            ArchiveEditorPage {
                                 draft_files: draft_files,
                                 compression: compression,
                                 archive_name: archive_name,
@@ -409,16 +600,34 @@ fn App() -> Element {
                                 busy: busy,
                                 toast: toast,
                                 next_id: next_id,
-                                editing_source: editing_source,
+                                editor_mode: editor_mode,
                                 logs: logs,
+                                on_new: move |_| {
+                                    reset_archive_editor(
+                                        draft_files,
+                                        compression,
+                                        archive_name,
+                                        alignment,
+                                        random_access,
+                                        dz_options,
+                                        editor_mode,
+                                    );
+                                },
                                 on_saved: move |value: LoadedArchive| {
                                     focused_entry.set(None);
                                     archive.set(Some(value));
-                                    draft_files.write().clear();
                                     selected.write().clear();
                                     search.set(String::new());
                                     browse_path.set(String::new());
-                                    editing_source.set(None);
+                                    reset_archive_editor(
+                                        draft_files,
+                                        compression,
+                                        archive_name,
+                                        alignment,
+                                        random_access,
+                                        dz_options,
+                                        editor_mode,
+                                    );
                                     page.set(WorkspacePage::Browse);
                                 },
                             }
@@ -794,6 +1003,20 @@ fn build_browser_listing(
         return (Vec::new(), files);
     }
 
+    build_directory_listing(entries, current_dir)
+}
+
+fn build_draft_browser_listing(
+    files: &[DraftFile],
+    current_dir: &str,
+) -> (Vec<FolderView>, Vec<DraftFile>) {
+    build_directory_listing(files, current_dir)
+}
+
+fn build_directory_listing<T: BrowserItem>(
+    items: &[T],
+    current_dir: &str,
+) -> (Vec<FolderView>, Vec<T>) {
     let current_dir = current_dir.trim_matches('/');
     let prefix = if current_dir.is_empty() {
         String::new()
@@ -803,8 +1026,8 @@ fn build_browser_listing(
     let mut folder_map = BTreeMap::<String, FolderView>::new();
     let mut files = Vec::new();
 
-    for entry in entries {
-        let path = entry.path.trim_matches('/');
+    for item in items {
+        let path = item.browser_path().trim_matches('/');
         let Some(relative) = path.strip_prefix(&prefix) else {
             continue;
         };
@@ -824,72 +1047,37 @@ fn build_browser_listing(
                     path: folder_path,
                     file_count: 0,
                     size: 0,
-                    packed_size: 0,
+                    packed_size: item.browser_packed_size().map(|_| 0),
+                    volume: Some(item.browser_volume()),
                     entry_ids: Vec::new(),
                 });
+            if folder.file_count > 0 && folder.volume != Some(item.browser_volume()) {
+                folder.volume = None;
+            }
             folder.file_count += 1;
-            folder.size = folder.size.saturating_add(entry.size);
-            folder.packed_size = folder.packed_size.saturating_add(entry.packed_size);
-            folder.entry_ids.push(entry.id);
+            folder.size = folder.size.saturating_add(item.browser_size());
+            folder.packed_size = match (folder.packed_size, item.browser_packed_size()) {
+                (Some(total), Some(size)) => Some(total.saturating_add(size)),
+                _ => None,
+            };
+            if let Some(id) = item.browser_entry_id() {
+                folder.entry_ids.push(id);
+            }
         } else if !relative.is_empty() {
-            files.push(entry.clone());
+            files.push(item.clone());
         }
     }
 
     let mut folders: Vec<FolderView> = folder_map.into_values().collect();
     folders.sort_by_key(|folder| folder.name.to_lowercase());
-    files.sort_by_key(|entry| entry.name.to_lowercase());
+    files.sort_by_key(|item| draft_file_name(item.browser_path()).to_lowercase());
     (folders, files)
 }
 
-fn build_draft_browser_listing(
-    files: &[DraftFile],
-    current_dir: &str,
-) -> (Vec<FolderView>, Vec<DraftFile>) {
-    let current_dir = current_dir.trim_matches('/');
-    let prefix = if current_dir.is_empty() {
-        String::new()
-    } else {
-        format!("{current_dir}/")
-    };
-    let mut folder_map = BTreeMap::<String, FolderView>::new();
-    let mut visible_files = Vec::new();
-
-    for file in files {
-        let path = file.path.trim_matches('/');
-        let Some(relative) = path.strip_prefix(&prefix) else {
-            continue;
-        };
-        if let Some((folder_name, _)) = relative.split_once('/') {
-            if folder_name.is_empty() {
-                continue;
-            }
-            let folder_path = if current_dir.is_empty() {
-                folder_name.to_string()
-            } else {
-                format!("{current_dir}/{folder_name}")
-            };
-            let folder = folder_map
-                .entry(folder_path.clone())
-                .or_insert_with(|| FolderView {
-                    name: folder_name.to_string(),
-                    path: folder_path,
-                    file_count: 0,
-                    size: 0,
-                    packed_size: 0,
-                    entry_ids: Vec::new(),
-                });
-            folder.file_count += 1;
-            folder.size = folder.size.saturating_add(file.bytes.len() as u64);
-        } else if !relative.is_empty() {
-            visible_files.push(file.clone());
-        }
-    }
-
-    let mut folders: Vec<FolderView> = folder_map.into_values().collect();
-    folders.sort_by_key(|folder| folder.name.to_lowercase());
-    visible_files.sort_by_key(|file| draft_file_name(&file.path).to_lowercase());
-    (folders, visible_files)
+fn remove_draft_folder(files: &mut Vec<DraftFile>, folder_path: &str) {
+    let folder_path = folder_path.trim_matches('/');
+    let prefix = format!("{folder_path}/");
+    files.retain(|file| !file.path.trim_matches('/').starts_with(&prefix));
 }
 
 fn entry_ids_in_directory(entries: &[EntryView], directory: &str) -> Vec<usize> {
@@ -958,13 +1146,13 @@ fn join_archive_path(directory: &str, path: &str) -> String {
 
 #[component]
 fn BrowsePage(
-    archive: Signal<Option<LoadedArchive>>,
+    mut archive: Signal<Option<LoadedArchive>>,
     selected: Signal<HashSet<usize>>,
-    focused_entry: Signal<Option<usize>>,
-    search: Signal<String>,
-    browse_path: Signal<String>,
+    mut focused_entry: Signal<Option<usize>>,
+    mut search: Signal<String>,
+    mut browse_path: Signal<String>,
     busy: Signal<Option<String>>,
-    toast: Signal<Option<(bool, String)>>,
+    mut toast: Signal<Option<(bool, String)>>,
     next_id: Signal<u64>,
     draft_files: Signal<Vec<DraftFile>>,
     compression: Signal<CompressionChoice>,
@@ -972,10 +1160,10 @@ fn BrowsePage(
     alignment: Signal<u32>,
     random_access: Signal<bool>,
     dz_options: Signal<DzCompressionOptions>,
-    editing_source: Signal<Option<String>>,
+    editor_mode: Signal<ArchiveEditorMode>,
     logs: Signal<Vec<String>>,
     page: Signal<WorkspacePage>,
-    on_create: EventHandler<MouseEvent>,
+    on_new: EventHandler<MouseEvent>,
 ) -> Element {
     let locale = use_context::<Signal<Locale>>();
     let current_locale = locale();
@@ -1007,7 +1195,6 @@ fn BrowsePage(
                         input {
                             class: "visually-hidden",
                             r#type: "file",
-                            accept: ".dz,.dzip,.001,.002,.003,.004,.005",
                             multiple: true,
                             onchange: move |event| {
                                 let files = event.files();
@@ -1038,12 +1225,36 @@ fn BrowsePage(
                                             }
                                         }
                                     }
-                                    let main_index = loaded.iter().position(|(name, _)| {
-                                        let lower = name.to_ascii_lowercase();
-                                        lower.ends_with(".dz") || lower.ends_with(".dzip")
-                                    }).unwrap_or(0);
-                                    let (main_name, main_bytes) = loaded.remove(main_index);
-                                    match open_archive(main_name.clone(), main_bytes, loaded).await {
+                                    let (main_name, main_bytes, auxiliary) =
+                                        match prepare_archive_files(loaded) {
+                                            Ok(prepared) => prepared,
+                                            Err(DroppedArchiveError::NoMainArchive) => {
+                                                let message = i18n.t("drop-archive-no-main");
+                                                append_log(logs, "WARN", &message);
+                                                toast.set(Some((false, message)));
+                                                busy.set(None);
+                                                return;
+                                            }
+                                            Err(DroppedArchiveError::MultipleMainArchives) => {
+                                                let message = i18n.t("drop-archive-multiple-main");
+                                                append_log(logs, "WARN", &message);
+                                                toast.set(Some((false, message)));
+                                                busy.set(None);
+                                                return;
+                                            }
+                                            Err(DroppedArchiveError::Read(error)
+                                                | DroppedArchiveError::Open(error)) => {
+                                                let message = i18n.t_args(
+                                                    "drop-open-error",
+                                                    &[("error", error)],
+                                                );
+                                                append_log(logs, "ERROR", &message);
+                                                toast.set(Some((false, message)));
+                                                busy.set(None);
+                                                return;
+                                            }
+                                        };
+                                    match open_archive(main_name.clone(), main_bytes, auxiliary).await {
                                         Ok(value) => {
                                             focused_entry.set(None);
                                             archive.set(Some(value));
@@ -1067,7 +1278,7 @@ fn BrowsePage(
                             }
                         }
                     }
-                    button { class: "button secondary large", onclick: on_create,
+                    button { class: "button secondary large", onclick: on_new,
                         Icon { name: IconName::PackagePlus, size: 19 }
                         "{create_archive}"
                     }
@@ -1104,9 +1315,11 @@ fn BrowsePage(
     let archive_for_selected = archive_value.clone();
     let archive_for_all = archive_value.clone();
     let archive_for_edit = archive_value.clone();
+    let selected_export_base = current_dir.clone();
     let overview_description = i18n.t("archive-overview-description");
     let overview_eyebrow = i18n.t("archive-overview");
     let edit_archive = i18n.t("edit-archive");
+    let close_archive = i18n.t("close-archive");
     let extract_selected = i18n.t("extract-selected");
     let extract_all = i18n.t("extract-all");
     let files_label = i18n.t("files");
@@ -1127,6 +1340,7 @@ fn BrowsePage(
     let original_size = i18n.t("original-size");
     let packed_size = i18n.t("packed-size");
     let algorithm_label = i18n.t("algorithm");
+    let volume_label = i18n.t("volume");
     let empty_folder = i18n.t("empty-folder");
     let no_matches = i18n.t("no-matches");
     let empty_folder_hint = i18n.t("empty-folder-hint");
@@ -1170,6 +1384,7 @@ fn BrowsePage(
             ("total", archive_value.entries.len().to_string()),
         ],
     );
+    let archive_name_for_close = archive_value.name.clone();
 
     rsx! {
         div { class: "archive-heading",
@@ -1207,11 +1422,18 @@ fn BrowsePage(
                                             .find(|entry| entry.path.eq_ignore_ascii_case(&path))
                                             .map(|entry| CompressionChoice::from_archive_label(&entry.compression))
                                             .unwrap_or(method);
+                                        let entry_volume = archive_value
+                                            .entries
+                                            .iter()
+                                            .find(|entry| entry.path.eq_ignore_ascii_case(&path))
+                                            .map(|entry| entry.volume)
+                                            .unwrap_or(0);
                                         drafts.push(DraftFile {
                                             id,
                                             path,
                                             bytes: Arc::from(bytes),
                                             compression: entry_compression,
+                                            volume: entry_volume,
                                         });
                                     }
                                     let source_name = archive_value.name.clone();
@@ -1221,8 +1443,10 @@ fn BrowsePage(
                                     alignment.set(0);
                                     random_access.set(false);
                                     dz_options.set(archive_value.dz_options);
-                                    editing_source.set(Some(source_name.clone()));
-                                    page.set(WorkspacePage::Create);
+                                    editor_mode.set(ArchiveEditorMode::Existing {
+                                        source_name: source_name.clone(),
+                                    });
+                                    page.set(WorkspacePage::Editor);
                                     let message = i18n.t_args(
                                         "loaded-edit",
                                         &[("name", source_name)],
@@ -1247,8 +1471,17 @@ fn BrowsePage(
                     onclick: move |_| {
                         let archive_value = archive_for_selected.clone();
                         let ids: Vec<usize> = selected.read().iter().copied().collect();
+                        let export_base = selected_export_base.clone();
                         async move {
-                            extract_and_export(archive_value, ids, busy, toast, logs, current_locale).await;
+                            extract_and_export(
+                                archive_value,
+                                ids,
+                                Some(export_base),
+                                busy,
+                                toast,
+                                logs,
+                                current_locale,
+                            ).await;
                         }
                     },
                     Icon { name: IconName::Download, size: 17 }
@@ -1260,11 +1493,40 @@ fn BrowsePage(
                         let archive_value = archive_for_all.clone();
                         let ids = archive_value.entries.iter().map(|entry| entry.id).collect();
                         async move {
-                            extract_and_export(archive_value, ids, busy, toast, logs, current_locale).await;
+                            extract_and_export(
+                                archive_value,
+                                ids,
+                                None,
+                                busy,
+                                toast,
+                                logs,
+                                current_locale,
+                            ).await;
                         }
                     },
                     Icon { name: IconName::ArchiveRestore, size: 17 }
                     "{extract_all}"
+                }
+                button {
+                    class: "button secondary close-archive-button",
+                    r#type: "button",
+                    aria_label: close_archive.clone(),
+                    title: close_archive.clone(),
+                    onclick: move |_| {
+                        archive.set(None);
+                        selected.write().clear();
+                        focused_entry.set(None);
+                        search.set(String::new());
+                        browse_path.set(String::new());
+                        let message = i18n.t_args(
+                            "closed-archive",
+                            &[("name", archive_name_for_close.clone())],
+                        );
+                        append_log(logs, "INFO", &message);
+                        toast.set(Some((true, message)));
+                    },
+                    Icon { name: IconName::X, size: 17 }
+                    span { "{close_archive}" }
                 }
             }
         }
@@ -1276,16 +1538,13 @@ fn BrowsePage(
             StatCard { icon: IconName::Gauge, label: ratio_label, value: format!("{}%", ratio_percent(archive_value.source_size, archive_value.unpacked_size)), note: ratio_note.to_string(), tone: "amber" }
         }
 
-        div { class: "archive-layout",
-            section { class: "file-panel glass-card",
-                div { class: "panel-toolbar",
-                    div { class: "panel-title",
-                        div { class: "soft-icon", Icon { name: IconName::ListTree, size: 18 } }
-                        div {
-                            strong { "{archive_contents}" }
-                            span { "{contents_summary}" }
-                        }
-                    }
+        FileWorkspaceLayout { onclick: move |_| {},
+            FileBrowserPanel {
+                icon: IconName::ListTree,
+                title: archive_contents,
+                summary: contents_summary,
+                menu_open: false,
+                header_actions: rsx! {
                     if selected_count > 0 {
                         div { class: "selection-summary",
                             span { "{selected_summary}" }
@@ -1293,59 +1552,34 @@ fn BrowsePage(
                             button { onclick: move |_| selected.write().clear(), "{clear_label}" }
                         }
                     }
-                }
-
-                div { class: "file-browser-bar",
-                    button {
-                        class: "browser-back-button",
-                        r#type: "button",
-                        disabled: current_dir.is_empty() || !query.is_empty(),
-                        aria_label: parent_folder,
-                        title: parent_label,
-                        onclick: {
-                            let parent_dir = parent_dir.clone();
-                            move |_| {
-                                browse_path.set(parent_dir.clone());
-                                focused_entry.set(None);
-                            }
-                        },
-                        Icon { name: IconName::ArrowLeft, size: 16 }
-                    }
-                    nav { class: "archive-breadcrumbs", aria_label: archive_path_label,
-                        button {
-                            class: if current_dir.is_empty() { "archive-crumb active" } else { "archive-crumb" },
-                            r#type: "button",
-                            disabled: !query.is_empty(),
-                            onclick: move |_| {
-                                browse_path.set(String::new());
-                                focused_entry.set(None);
-                            },
-                            Icon { name: IconName::Home, size: 14 }
-                            span { if query.is_empty() { "{root_label}" } else { "{search_results}" } }
+                },
+                BrowserBar {
+                    current_dir: current_dir.clone(),
+                    breadcrumbs,
+                    root_label,
+                    root_override: if query.is_empty() { None } else { Some(search_results) },
+                    path_label: archive_path_label,
+                    back_aria_label: parent_folder,
+                    back_title: parent_label,
+                    back_disabled: current_dir.is_empty() || !query.is_empty(),
+                    navigation_disabled: !query.is_empty(),
+                    on_back: {
+                        let parent_dir = parent_dir.clone();
+                        move |_| {
+                            browse_path.set(parent_dir.clone());
+                            focused_entry.set(None);
                         }
-                        if query.is_empty() {
-                            for (index, crumb) in breadcrumbs.iter().enumerate() {
-                                span { class: "crumb-separator", Icon { name: IconName::ChevronRight, size: 13 } }
-                                button {
-                                    class: if index + 1 == breadcrumbs.len() { "archive-crumb active" } else { "archive-crumb" },
-                                    r#type: "button",
-                                    onclick: {
-                                        let target = crumb.path.clone();
-                                        move |_| {
-                                            browse_path.set(target.clone());
-                                            focused_entry.set(None);
-                                        }
-                                    },
-                                    "{crumb.name}"
-                                }
-                            }
-                        }
-                    }
+                    },
+                    on_navigate: move |target: String| {
+                        browse_path.set(target);
+                        focused_entry.set(None);
+                    },
                 }
 
                 div { class: "file-table",
-                    div { class: "file-row table-head",
-                        label { class: "check-wrap",
+                    FileTableHeader {
+                        leading: rsx! {
+                            label { class: "check-wrap",
                             input {
                                 r#type: "checkbox",
                                 checked: all_visible_selected,
@@ -1361,11 +1595,13 @@ fn BrowsePage(
                                     }
                                 }
                             }
-                        }
-                        span { "{name_label}" }
-                        span { "{original_size}" }
-                        span { "{packed_size}" }
-                        span { "{algorithm_label}" }
+                            }
+                        },
+                        name: name_label,
+                        original: original_size,
+                        packed: packed_size,
+                        algorithm: algorithm_label,
+                        volume: volume_label,
                     }
                     if folders.is_empty() && visible.is_empty() {
                         div { class: "no-results",
@@ -1404,7 +1640,7 @@ fn BrowsePage(
                 }
             }
 
-            aside { class: "inspector glass-card",
+            ContextPanel { class_name: "inspector", menu_open: false,
                 if let Some(entry) = focused {
                     EntryInspector { entry: entry }
                 } else {
@@ -1420,7 +1656,7 @@ fn BrowsePage(
 }
 
 #[component]
-fn CreatePage(
+fn ArchiveEditorPage(
     draft_files: Signal<Vec<DraftFile>>,
     compression: Signal<CompressionChoice>,
     archive_name: Signal<String>,
@@ -1430,8 +1666,9 @@ fn CreatePage(
     busy: Signal<Option<String>>,
     toast: Signal<Option<(bool, String)>>,
     next_id: Signal<u64>,
-    editing_source: Signal<Option<String>>,
+    editor_mode: Signal<ArchiveEditorMode>,
     logs: Signal<Vec<String>>,
+    on_new: EventHandler<MouseEvent>,
     on_saved: EventHandler<LoadedArchive>,
 ) -> Element {
     let locale = use_context::<Signal<Locale>>();
@@ -1457,7 +1694,8 @@ fn CreatePage(
         .iter()
         .any(|file| file.compression == CompressionChoice::Dz)
         || (draft_files.read().is_empty() && current_compression == CompressionChoice::Dz);
-    let editing_name = editing_source.read().as_ref().cloned();
+    let current_mode = editor_mode();
+    let editing_name = current_mode.source_name().map(str::to_owned);
     let is_editing = editing_name.is_some();
     let page_title = if let Some(source) = editing_name.as_ref() {
         i18n.t_args("edit-title", &[("name", source.clone())])
@@ -1477,6 +1715,7 @@ fn CreatePage(
     } else {
         i18n.t("create-and-save")
     };
+    let create_archive = i18n.t("create-new-archive");
     let edit_notice = i18n.t("edit-notice");
     let draft_heading = i18n.t("draft-files");
     let draft_summary = i18n.t_args(
@@ -1499,7 +1738,9 @@ fn CreatePage(
     let root_label = i18n.t("root");
     let name_label = i18n.t("name");
     let original_size = i18n.t("original-size");
+    let packed_size = i18n.t("packed-size");
     let algorithm_label = i18n.t("algorithm");
+    let volume_label = i18n.t("volume");
     let empty_folder = i18n.t("empty-folder");
     let empty_folder_hint = i18n.t("empty-folder-hint");
     let browse_hint = i18n.t("draft-browse-hint");
@@ -1543,61 +1784,78 @@ fn CreatePage(
     });
 
     rsx! {
-        div { class: "archive-heading create-heading",
+        div { class: "archive-heading editor-heading",
             div {
                 span { class: "eyebrow accent", "{mode_eyebrow}" }
                 h1 { "{page_title}" }
                 p { "{page_description}" }
             }
-            button {
-                class: "button primary large",
-                disabled: draft_files.read().is_empty(),
-                onclick: move |_| {
-                    let files = draft_files.read().clone();
-                    let name = normalise_archive_name(&archive_name());
-                    let align = alignment();
-                    let random = random_access();
-                    let dz = dz_options();
-                    async move {
-                        busy.set(Some(i18n.t("compressing-files")));
-                        match build_archive(
-                            &files,
-                            &name,
-                            align,
-                            random,
-                            dz,
-                        )
-                        .await
-                        {
-                            Ok((bytes, reopened)) => {
-                                busy.set(Some(i18n.t("saving-archive")));
-                                match platform::save_bytes(&name, bytes).await {
-                                    Ok(_) => {
-                                        let message = i18n.t_args(
-                                            if is_editing { "saved-archive" } else { "created-archive" },
-                                            &[("name", name.clone())],
-                                        );
-                                        append_log(logs, "INFO", &message);
-                                        toast.set(Some((true, message)));
-                                        on_saved.call(reopened);
-                                    }
-                                    Err(message) if message == "已取消保存" => {}
-                                    Err(message) => {
-                                        append_log(logs, "ERROR", &message);
-                                        toast.set(Some((false, message.clone())));
+            div { class: "heading-actions",
+                if is_editing {
+                    button { class: "button secondary large", onclick: on_new,
+                        Icon { name: IconName::PackagePlus, size: 18 }
+                        "{create_archive}"
+                    }
+                }
+                button {
+                    class: "button primary large",
+                    disabled: draft_files.read().is_empty(),
+                    onclick: move |_| {
+                        let files = draft_files.read().clone();
+                        let name = normalise_archive_name(&archive_name());
+                        let align = alignment();
+                        let random = random_access();
+                        let dz = dz_options();
+                        async move {
+                            busy.set(Some(i18n.t("compressing-files")));
+                            match build_archive(
+                                &files,
+                                &name,
+                                align,
+                                random,
+                                dz,
+                            )
+                            .await
+                            {
+                                Ok((volumes, reopened)) => {
+                                    let volume_count = volumes.len();
+                                    busy.set(Some(i18n.t("saving-archive")));
+                                    match platform::save_archive_volumes(&name, volumes).await {
+                                        Ok(_) => {
+                                            let message = i18n.t_args(
+                                                match (is_editing, volume_count > 1) {
+                                                    (true, true) => "saved-split-archive",
+                                                    (true, false) => "saved-archive",
+                                                    (false, true) => "created-split-archive",
+                                                    (false, false) => "created-archive",
+                                                },
+                                                &[
+                                                    ("name", name.clone()),
+                                                    ("count", volume_count.to_string()),
+                                                ],
+                                            );
+                                            append_log(logs, "INFO", &message);
+                                            toast.set(Some((true, message)));
+                                            on_saved.call(reopened);
+                                        }
+                                        Err(message) if message == "已取消保存" => {}
+                                        Err(message) => {
+                                            append_log(logs, "ERROR", &message);
+                                            toast.set(Some((false, message.clone())));
+                                        }
                                     }
                                 }
+                                Err(message) => {
+                                    append_log(logs, "ERROR", &message);
+                                    toast.set(Some((false, message.clone())));
+                                }
                             }
-                            Err(message) => {
-                                append_log(logs, "ERROR", &message);
-                                toast.set(Some((false, message.clone())));
-                            }
+                            busy.set(None);
                         }
-                        busy.set(None);
-                    }
-                },
-                Icon { name: IconName::PackageCheck, size: 19 }
-                "{save_button}"
+                    },
+                    Icon { name: IconName::PackageCheck, size: 19 }
+                    "{save_button}"
+                }
             }
         }
 
@@ -1611,19 +1869,13 @@ fn CreatePage(
             }
         }
 
-        div {
-            class: "create-layout",
-            onclick: move |_| open_select_menu.set(None),
-            section {
-                class: if matches!(open_select_menu(), Some(OpenSelectMenu::Compression(_))) { "draft-panel glass-card menu-open" } else { "draft-panel glass-card" },
-                div { class: "panel-toolbar",
-                    div { class: "panel-title",
-                        div { class: "soft-icon", Icon { name: IconName::Files, size: 18 } }
-                        div {
-                            strong { "{draft_heading}" }
-                            span { "{draft_summary}" }
-                        }
-                    }
+        FileWorkspaceLayout { onclick: move |_| open_select_menu.set(None),
+            FileBrowserPanel {
+                icon: IconName::Files,
+                title: draft_heading,
+                summary: draft_summary,
+                menu_open: matches!(open_select_menu(), Some(OpenSelectMenu::Compression(_) | OpenSelectMenu::Volume(_))),
+                header_actions: rsx! {
                     div { class: "draft-actions",
                         if !draft_files.read().is_empty() {
                             button {
@@ -1651,7 +1903,7 @@ fn CreatePage(
                             destination: draft_current_dir.clone(),
                         }
                     }
-                }
+                },
 
                 if draft_files.read().is_empty() {
                     label { class: "drop-zone",
@@ -1681,50 +1933,32 @@ fn CreatePage(
                         }
                     }
                 } else {
-                    div { class: "file-browser-bar",
-                        button {
-                            class: "browser-back-button",
-                            r#type: "button",
-                            disabled: draft_current_dir.is_empty(),
-                            aria_label: parent_folder,
-                            title: parent_label,
-                            onclick: {
-                                let parent = draft_parent_dir.clone();
-                                move |_| draft_browse_path.set(parent.clone())
-                            },
-                            Icon { name: IconName::ArrowLeft, size: 16 }
-                        }
-                        nav { class: "archive-breadcrumbs", aria_label: archive_path_label,
-                            button {
-                                class: if draft_current_dir.is_empty() { "archive-crumb active" } else { "archive-crumb" },
-                                r#type: "button",
-                                onclick: move |_| draft_browse_path.set(String::new()),
-                                Icon { name: IconName::Home, size: 14 }
-                                span { "{root_label}" }
-                            }
-                            for (index, crumb) in draft_breadcrumbs.iter().enumerate() {
-                                span { class: "crumb-separator", Icon { name: IconName::ChevronRight, size: 13 } }
-                                button {
-                                    class: if index + 1 == draft_breadcrumbs.len() { "archive-crumb active" } else { "archive-crumb" },
-                                    r#type: "button",
-                                    onclick: {
-                                        let target = crumb.path.clone();
-                                        move |_| draft_browse_path.set(target.clone())
-                                    },
-                                    "{crumb.name}"
-                                }
-                            }
-                        }
+                    BrowserBar {
+                        current_dir: draft_current_dir.clone(),
+                        breadcrumbs: draft_breadcrumbs,
+                        root_label,
+                        root_override: None,
+                        path_label: archive_path_label,
+                        back_aria_label: parent_folder,
+                        back_title: parent_label,
+                        back_disabled: draft_current_dir.is_empty(),
+                        navigation_disabled: false,
+                        on_back: {
+                            let parent = draft_parent_dir.clone();
+                            move |_| draft_browse_path.set(parent.clone())
+                        },
+                        on_navigate: move |target: String| draft_browse_path.set(target),
                     }
 
                     div {
-                        class: if matches!(open_select_menu(), Some(OpenSelectMenu::Compression(_))) { "file-table draft-browser-table menu-open" } else { "file-table draft-browser-table" },
-                        div { class: "file-row table-head draft-browser-row",
-                            div { class: "check-wrap" }
-                            span { "{name_label}" }
-                            span { "{original_size}" }
-                            span { "{algorithm_label}" }
-                            div {}
+                        class: "file-table",
+                        FileTableHeader {
+                            leading: rsx! { div { class: "check-wrap" } },
+                            name: name_label,
+                            original: original_size,
+                            packed: packed_size,
+                            algorithm: algorithm_label,
+                            volume: volume_label,
                         }
                         if draft_folders.is_empty() && visible_draft_files.is_empty() {
                             div { class: "no-results",
@@ -1738,6 +1972,7 @@ fn CreatePage(
                                 key: "{folder.path}",
                                 folder: folder.clone(),
                                 browse_path: draft_browse_path,
+                                draft_files,
                             }
                         }
                         for file in visible_draft_files.iter() {
@@ -1756,7 +1991,9 @@ fn CreatePage(
                 }
             }
 
-            aside { class: if open_select_menu() == Some(OpenSelectMenu::Alignment) { "settings-panel glass-card menu-open" } else { "settings-panel glass-card" },
+            ContextPanel {
+                class_name: "settings-panel",
+                menu_open: open_select_menu() == Some(OpenSelectMenu::Alignment),
                 div { class: "settings-heading",
                     div { class: "soft-icon", Icon { name: IconName::Sliders, size: 18 } }
                     div {
@@ -2048,6 +2285,7 @@ fn CompressionPicker(
                         open_menu.set(None);
                     } else {
                         open_menu.set(Some(OpenSelectMenu::Compression(file_id)));
+                        reveal_draft_menu(file_id);
                     }
                 },
                 span { "{current_label}" }
@@ -2084,6 +2322,130 @@ fn CompressionPicker(
                                 }
                             }
                             span { "{compression_label(choice, i18n)}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn VolumePicker(
+    file_id: u64,
+    file_path: String,
+    value: u16,
+    mut draft_files: Signal<Vec<DraftFile>>,
+    mut open_menu: Signal<Option<OpenSelectMenu>>,
+) -> Element {
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
+    let is_open = open_menu() == Some(OpenSelectMenu::Volume(file_id));
+    let menu_id = format!("volume-menu-{file_id}");
+    let current_label = volume_option_label(value, i18n);
+    let max_volume = draft_files
+        .read()
+        .iter()
+        .map(|file| file.volume)
+        .max()
+        .unwrap_or(0);
+    let trigger_label = i18n.t_args(
+        "set-volume-for",
+        &[
+            ("path", file_path.clone()),
+            ("volume", current_label.clone()),
+        ],
+    );
+    let menu_label = i18n.t_args("volume-menu-for", &[("path", file_path)]);
+
+    rsx! {
+        div {
+            class: if is_open { "compression-picker volume-picker open" } else { "compression-picker volume-picker" },
+            onclick: move |event| event.stop_propagation(),
+            button {
+                class: "compression-trigger",
+                r#type: "button",
+                aria_label: trigger_label,
+                aria_haspopup: "listbox",
+                aria_expanded: if is_open { "true" } else { "false" },
+                aria_controls: "{menu_id}",
+                onclick: move |_| {
+                    if is_open {
+                        open_menu.set(None);
+                    } else {
+                        open_menu.set(Some(OpenSelectMenu::Volume(file_id)));
+                        reveal_draft_menu(file_id);
+                    }
+                },
+                span { "{current_label}" }
+                span { class: "compression-trigger-chevron",
+                    Icon { name: IconName::ChevronDown, size: 13 }
+                }
+            }
+            if is_open {
+                div {
+                    id: "{menu_id}",
+                    class: "compression-menu volume-menu",
+                    role: "listbox",
+                    aria_label: menu_label,
+                    for option in 0..=max_volume {
+                        {
+                            let option_label = volume_option_label(option, i18n);
+                            let active = option == value;
+                            rsx! {
+                                button {
+                                    class: if active { "compression-menu-option active" } else { "compression-menu-option" },
+                                    r#type: "button",
+                                    role: "option",
+                                    aria_selected: if active { "true" } else { "false" },
+                                    onclick: move |_| {
+                                        if let Some(item) = draft_files
+                                            .write()
+                                            .iter_mut()
+                                            .find(|item| item.id == file_id)
+                                        {
+                                            item.volume = option;
+                                        }
+                                        open_menu.set(None);
+                                    },
+                                    span { class: "compression-option-mark",
+                                        if active {
+                                            Icon { name: IconName::Check, size: 13 }
+                                        }
+                                    }
+                                    span { "{option_label}" }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(next_volume) = max_volume.checked_add(1) {
+                        {
+                            let new_volume_label = i18n.t_args(
+                                "new-volume-option",
+                                &[("number", next_volume.to_string())],
+                            );
+                            rsx! {
+                                button {
+                                    class: "compression-menu-option new-volume-option",
+                                    r#type: "button",
+                                    role: "option",
+                                    aria_selected: "false",
+                                    onclick: move |_| {
+                                        if let Some(item) = draft_files
+                                            .write()
+                                            .iter_mut()
+                                            .find(|item| item.id == file_id)
+                                        {
+                                            item.volume = next_volume;
+                                        }
+                                        open_menu.set(None);
+                                    },
+                                    span { class: "compression-option-mark",
+                                        Icon { name: IconName::Plus, size: 13 }
+                                    }
+                                    span { "{new_volume_label}" }
+                                }
+                            }
                         }
                     }
                 }
@@ -2228,6 +2590,7 @@ async fn add_uploaded_files(
                 path,
                 bytes: Arc::from(bytes.to_vec()),
                 compression: default_compression,
+                volume: 0,
             });
         }
     }
@@ -2249,9 +2612,75 @@ async fn add_dropped_files(
             path: file.path,
             bytes: Arc::from(file.bytes),
             compression: default_compression,
+            volume: 0,
         });
     }
     Ok(count)
+}
+
+async fn open_dropped_archive(
+    event: DragEvent,
+) -> Result<(String, LoadedArchive), DroppedArchiveError> {
+    let files = file_drop::read_dropped_files(&event)
+        .await
+        .map_err(DroppedArchiveError::Read)?;
+    let (main_name, main_bytes, auxiliary) = prepare_dropped_archive(files)?;
+    let archive = open_archive(main_name.clone(), main_bytes, auxiliary)
+        .await
+        .map_err(DroppedArchiveError::Open)?;
+    Ok((main_name, archive))
+}
+
+fn prepare_dropped_archive(
+    files: Vec<file_drop::DroppedFile>,
+) -> Result<PreparedArchiveFiles, DroppedArchiveError> {
+    prepare_archive_files(
+        files
+            .into_iter()
+            .map(|file| (dropped_file_name(&file.path).to_string(), file.bytes))
+            .collect(),
+    )
+}
+
+fn prepare_archive_files(
+    files: Vec<NamedFileBytes>,
+) -> Result<PreparedArchiveFiles, DroppedArchiveError> {
+    let mut main_archives = Vec::new();
+    let mut auxiliary = Vec::new();
+    for (name, bytes) in files {
+        if is_main_archive_name(&name) {
+            main_archives.push((name, bytes));
+        } else if is_archive_volume_name(&name) {
+            auxiliary.push((name, bytes));
+        }
+    }
+
+    if main_archives.is_empty() {
+        return Err(DroppedArchiveError::NoMainArchive);
+    }
+    if main_archives.len() > 1 {
+        return Err(DroppedArchiveError::MultipleMainArchives);
+    }
+    auxiliary.sort_by_key(|(name, _)| name.to_ascii_lowercase());
+    let Some((main_name, main_bytes)) = main_archives.pop() else {
+        return Err(DroppedArchiveError::NoMainArchive);
+    };
+    Ok((main_name, main_bytes, auxiliary))
+}
+
+fn dropped_file_name(path: &str) -> &str {
+    path.trim_matches('/').rsplit('/').next().unwrap_or(path)
+}
+
+fn is_main_archive_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".dz") || name.ends_with(".dzip")
+}
+
+fn is_archive_volume_name(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        extension.len() >= 3 && extension.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn upload_path(file: &FileData, common_root: Option<&std::path::Path>) -> String {
@@ -2286,6 +2715,7 @@ fn common_upload_root(files: &[FileData]) -> Option<std::path::PathBuf> {
 async fn extract_and_export(
     archive: LoadedArchive,
     entry_ids: Vec<usize>,
+    export_base: Option<String>,
     mut busy: Signal<Option<String>>,
     mut toast: Signal<Option<(bool, String)>>,
     logs: Signal<Vec<String>>,
@@ -2301,7 +2731,10 @@ async fn extract_and_export(
     );
     busy.set(Some(progress));
     let result = match read_entries(&archive, &entry_ids).await {
-        Ok(files) => platform::export_files(&archive.name, files).await,
+        Ok(files) => {
+            let files = rebase_extracted_files(files, export_base.as_deref());
+            platform::export_files(&archive.name, files).await
+        }
         Err(message) => Err(message),
     };
     match result {
@@ -2318,6 +2751,31 @@ async fn extract_and_export(
     busy.set(None);
 }
 
+fn rebase_extracted_files(
+    mut files: Vec<(String, Vec<u8>)>,
+    export_base: Option<&str>,
+) -> Vec<(String, Vec<u8>)> {
+    let Some(export_base) = export_base.map(str::trim).filter(|path| !path.is_empty()) else {
+        return files;
+    };
+    let prefix = format!("{}/", export_base.trim_matches('/'));
+    if !files
+        .iter()
+        .all(|(path, _)| path.trim_matches('/').starts_with(&prefix))
+    {
+        return files;
+    }
+
+    for (path, _) in &mut files {
+        *path = path
+            .trim_matches('/')
+            .strip_prefix(&prefix)
+            .unwrap_or(path)
+            .to_string();
+    }
+    files
+}
+
 #[component]
 fn NavButton(
     active: bool,
@@ -2331,6 +2789,147 @@ fn NavButton(
             span { class: "nav-icon", Icon { name: icon, size: 20 } }
             span { class: "nav-copy", strong { "{label}" } small { "{hint}" } }
         }
+    }
+}
+
+#[component]
+fn FileWorkspaceLayout(onclick: EventHandler<MouseEvent>, children: Element) -> Element {
+    rsx! {
+        div { class: "file-workspace-layout", onclick, {children} }
+    }
+}
+
+#[component]
+fn FileBrowserPanel(
+    icon: IconName,
+    title: String,
+    summary: String,
+    menu_open: bool,
+    header_actions: Element,
+    children: Element,
+) -> Element {
+    rsx! {
+        section {
+            class: if menu_open { "file-browser-panel glass-card menu-open" } else { "file-browser-panel glass-card" },
+            div { class: "panel-toolbar",
+                div { class: "panel-title",
+                    div { class: "soft-icon", Icon { name: icon, size: 18 } }
+                    div {
+                        strong { "{title}" }
+                        span { "{summary}" }
+                    }
+                }
+                {header_actions}
+            }
+            {children}
+        }
+    }
+}
+
+#[component]
+fn ContextPanel(class_name: String, menu_open: bool, children: Element) -> Element {
+    rsx! {
+        aside {
+            class: if menu_open { "context-panel {class_name} glass-card menu-open" } else { "context-panel {class_name} glass-card" },
+            {children}
+        }
+    }
+}
+
+#[component]
+fn BrowserBar(
+    current_dir: String,
+    breadcrumbs: Vec<BrowserCrumb>,
+    root_label: String,
+    root_override: Option<String>,
+    path_label: String,
+    back_aria_label: String,
+    back_title: String,
+    back_disabled: bool,
+    navigation_disabled: bool,
+    on_back: EventHandler<()>,
+    on_navigate: EventHandler<String>,
+) -> Element {
+    let at_root = current_dir.is_empty();
+    let root_text = root_override.unwrap_or(root_label);
+    rsx! {
+        div { class: "file-browser-bar",
+            button {
+                class: "browser-back-button",
+                r#type: "button",
+                disabled: back_disabled,
+                aria_label: back_aria_label,
+                title: back_title,
+                onclick: move |_| on_back.call(()),
+                Icon { name: IconName::ArrowLeft, size: 16 }
+            }
+            nav { class: "archive-breadcrumbs", aria_label: path_label,
+                button {
+                    class: if at_root { "archive-crumb active" } else { "archive-crumb" },
+                    r#type: "button",
+                    disabled: navigation_disabled,
+                    onclick: move |_| on_navigate.call(String::new()),
+                    Icon { name: IconName::Home, size: 14 }
+                    span { "{root_text}" }
+                }
+                if !navigation_disabled {
+                    for (index, crumb) in breadcrumbs.iter().enumerate() {
+                        span { class: "crumb-separator", Icon { name: IconName::ChevronRight, size: 13 } }
+                        button {
+                            class: if index + 1 == breadcrumbs.len() { "archive-crumb active" } else { "archive-crumb" },
+                            r#type: "button",
+                            onclick: {
+                                let target = crumb.path.clone();
+                                move |_| on_navigate.call(target.clone())
+                            },
+                            "{crumb.name}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn FileTableHeader(
+    leading: Element,
+    name: String,
+    original: String,
+    packed: String,
+    algorithm: String,
+    volume: String,
+) -> Element {
+    rsx! {
+        div { class: "file-row table-head file-browser-row",
+            {leading}
+            span { "{name}" }
+            span { "{original}" }
+            span { "{packed}" }
+            span { "{algorithm}" }
+            span { "{volume}" }
+            div { class: "row-action-slot" }
+        }
+    }
+}
+
+#[component]
+fn BrowserNameCell(icon: IconName, folder: bool, children: Element) -> Element {
+    rsx! {
+        div { class: "file-cell name-cell",
+            div {
+                class: if folder { "file-type-icon folder" } else { "file-type-icon" },
+                Icon { name: icon, size: 19 }
+            }
+            {children}
+        }
+    }
+}
+
+#[component]
+fn BrowserValuePill(value: String, tone: String) -> Element {
+    rsx! {
+        span { class: "browser-value-pill {tone}", "{value}" }
     }
 }
 
@@ -2371,8 +2970,12 @@ fn FolderRow(
     );
     let original_label = i18n.t("original");
     let packed_label = i18n.t("packed");
-    let type_label = i18n.t("type");
+    let algorithm_label = i18n.t("algorithm");
     let folder_label = i18n.t("folder");
+    let packed_value = folder
+        .packed_size
+        .map(human_size)
+        .unwrap_or_else(|| i18n.t("pending-generation"));
     let select_label = i18n.t_args("select-folder", &[("name", folder.name.clone())]);
     let entry_ids = folder.entry_ids.clone();
     let selected_in_folder = entry_ids
@@ -2383,7 +2986,7 @@ fn FolderRow(
     let partially_selected = selected_in_folder > 0 && !all_selected;
     rsx! {
         div {
-            class: "file-row folder-row",
+            class: "file-row file-browser-row folder-row",
             button {
                 class: "folder-open-target",
                 r#type: "button",
@@ -2411,23 +3014,29 @@ fn FolderRow(
                     }
                 }
             }
-            div { class: "file-cell name-cell",
-                span { class: "folder-disclosure", Icon { name: IconName::ChevronRight, size: 15 } }
-                div { class: "file-type-icon folder", Icon { name: IconName::Folder, size: 19 } }
+            BrowserNameCell { icon: IconName::Folder, folder: true,
                 div {
                     strong { "{folder.name}" }
                     span { "{file_count}" }
                 }
             }
-            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(folder.size)}" }
-            span { class: "file-cell size-cell", "data-label": packed_label, "{human_size(folder.packed_size)}" }
-            span { class: "file-cell method-cell", "data-label": type_label, span { class: "folder-chip", "{folder_label}" } }
+            span { class: "file-cell size-cell original-cell", "data-label": original_label, "{human_size(folder.size)}" }
+            span { class: "file-cell size-cell packed-cell", "data-label": packed_label, "{packed_value}" }
+            span { class: "file-cell method-cell", "data-label": algorithm_label,
+                BrowserValuePill { value: folder_label, tone: "folder" }
+            }
+            div { class: "file-cell volume-cell" }
+            div { class: "row-action-slot" }
         }
     }
 }
 
 #[component]
-fn DraftFolderRow(folder: FolderView, mut browse_path: Signal<String>) -> Element {
+fn DraftFolderRow(
+    folder: FolderView,
+    mut browse_path: Signal<String>,
+    mut draft_files: Signal<Vec<DraftFile>>,
+) -> Element {
     let locale = use_context::<Signal<Locale>>();
     let i18n = I18n::new(locale());
     let target = folder.path.clone();
@@ -2437,25 +3046,41 @@ fn DraftFolderRow(folder: FolderView, mut browse_path: Signal<String>) -> Elemen
         &[("count", folder.file_count.to_string())],
     );
     let original_label = i18n.t("original");
-    let type_label = i18n.t("type");
+    let packed_label = i18n.t("packed");
+    let algorithm_label = i18n.t("algorithm");
     let folder_label = i18n.t("folder");
+    let pending_value = i18n.t("pending-generation");
+    let remove_label = i18n.t_args("remove-folder-label", &[("path", folder.path.clone())]);
+    let folder_path = folder.path.clone();
     rsx! {
-        button {
-            class: "file-row folder-row draft-browser-row",
-            r#type: "button",
-            aria_label: open_label,
-            onclick: move |_| browse_path.set(target.clone()),
-            div { class: "check-wrap folder-disclosure", Icon { name: IconName::ChevronRight, size: 15 } }
-            div { class: "file-cell name-cell",
-                div { class: "file-type-icon folder", Icon { name: IconName::Folder, size: 19 } }
+        div {
+            class: "file-row file-browser-row folder-row editable-folder-row",
+            button {
+                class: "folder-open-target",
+                r#type: "button",
+                aria_label: open_label,
+                onclick: move |_| browse_path.set(target.clone()),
+            }
+            div { class: "check-wrap" }
+            BrowserNameCell { icon: IconName::Folder, folder: true,
                 div {
                     strong { "{folder.name}" }
                     span { "{file_count}" }
                 }
             }
-            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(folder.size)}" }
-            span { class: "file-cell method-cell", "data-label": type_label, span { class: "folder-chip", "{folder_label}" } }
-            div { class: "draft-row-action-spacer" }
+            span { class: "file-cell size-cell original-cell", "data-label": original_label, "{human_size(folder.size)}" }
+            span { class: "file-cell size-cell packed-cell pending-value", "data-label": packed_label, "{pending_value}" }
+            span { class: "file-cell method-cell", "data-label": algorithm_label,
+                BrowserValuePill { value: folder_label, tone: "folder" }
+            }
+            div { class: "file-cell volume-cell" }
+            button {
+                class: "row-action danger row-action-slot draft-row-action",
+                r#type: "button",
+                aria_label: remove_label,
+                onclick: move |_| remove_draft_folder(&mut draft_files.write(), &folder_path),
+                Icon { name: IconName::X, size: 16 }
+            }
         }
     }
 }
@@ -2476,17 +3101,20 @@ fn DraftFileRow(
         .map(|(parent, _)| parent.to_string())
         .unwrap_or_else(|| i18n.t("root"));
     let original_label = i18n.t("original");
+    let packed_label = i18n.t("packed");
     let algorithm_label = i18n.t("algorithm");
+    let volume_label = i18n.t("volume");
+    let pending_value = i18n.t("pending-generation");
     let edit_label = i18n.t_args("rename-archive-entry-label", &[("path", file.path.clone())]);
     let edit_title = i18n.t("rename-archive-entry");
     let remove_label = i18n.t_args("remove-file-label", &[("path", file.path.clone())]);
 
     rsx! {
         div {
-            class: if open_menu() == Some(OpenSelectMenu::Compression(file.id)) { "file-row draft-browser-row draft-browser-file dropdown-open" } else { "file-row draft-browser-row draft-browser-file" },
+            id: "draft-row-{file.id}",
+            class: if matches!(open_menu(), Some(OpenSelectMenu::Compression(id) | OpenSelectMenu::Volume(id)) if id == file.id) { "file-row file-browser-row editable-file-row dropdown-open" } else { "file-row file-browser-row editable-file-row" },
             div { class: "check-wrap" }
-            div { class: "file-cell name-cell",
-                div { class: "file-type-icon", Icon { name: icon_for_file(&file.path), size: 19 } }
+            BrowserNameCell { icon: icon_for_file(&file.path), folder: false,
                 div { class: "draft-name",
                     input {
                         class: "draft-path-input",
@@ -2506,7 +3134,8 @@ fn DraftFileRow(
                     span { title: "{full_path}", "{location}" }
                 }
             }
-            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(file.bytes.len() as u64)}" }
+            span { class: "file-cell size-cell original-cell", "data-label": original_label, "{human_size(file.bytes.len() as u64)}" }
+            span { class: "file-cell size-cell packed-cell pending-value", "data-label": packed_label, "{pending_value}" }
             div { class: "file-cell method-cell", "data-label": algorithm_label,
                 CompressionPicker {
                     file_id: file.id,
@@ -2516,8 +3145,17 @@ fn DraftFileRow(
                     open_menu,
                 }
             }
+            div { class: "file-cell volume-cell", "data-label": volume_label,
+                VolumePicker {
+                    file_id: file.id,
+                    file_path: file.path.clone(),
+                    value: file.volume,
+                    draft_files,
+                    open_menu,
+                }
+            }
             button {
-                class: "row-action danger draft-row-action",
+                class: "row-action danger row-action-slot draft-row-action",
                 aria_label: remove_label,
                 onclick: {
                     let id = file.id;
@@ -2544,6 +3182,8 @@ fn FileRow(
     let original_label = i18n.t("original");
     let packed_label = i18n.t("packed");
     let algorithm_label = i18n.t("algorithm");
+    let volume_label = i18n.t("volume");
+    let volume_value = volume_option_label(entry.volume, i18n);
     let folder_name = if entry.folder == "根目录" {
         i18n.t("root")
     } else {
@@ -2551,7 +3191,7 @@ fn FileRow(
     };
     rsx! {
         div {
-            class: if active { "file-row active" } else { "file-row" },
+            class: if active { "file-row file-browser-row active" } else { "file-row file-browser-row" },
             onclick: {
                 let id = entry.id;
                 move |_| {
@@ -2573,16 +3213,21 @@ fn FileRow(
                     }
                 }
             }
-            div { class: "file-cell name-cell",
-                div { class: "file-type-icon", Icon { name: icon, size: 18 } }
+            BrowserNameCell { icon, folder: false,
                 div {
                     strong { "{entry.name}" }
                     span { "{folder_name}" }
                 }
             }
-            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(entry.size)}" }
-            span { class: "file-cell size-cell", "data-label": packed_label, "{human_size(entry.packed_size)}" }
-            span { class: "file-cell method-cell", "data-label": algorithm_label, span { class: "method-chip", "{entry.compression}" } }
+            span { class: "file-cell size-cell original-cell", "data-label": original_label, "{human_size(entry.size)}" }
+            span { class: "file-cell size-cell packed-cell", "data-label": packed_label, "{human_size(entry.packed_size)}" }
+            span { class: "file-cell method-cell", "data-label": algorithm_label,
+                BrowserValuePill { value: entry.compression, tone: "algorithm" }
+            }
+            span { class: "file-cell volume-cell", "data-label": volume_label,
+                BrowserValuePill { value: volume_value, tone: "volume" }
+            }
+            div { class: "row-action-slot" }
         }
     }
 }
@@ -2604,7 +3249,7 @@ fn EntryInspector(entry: EntryView) -> Element {
     let volume_label = i18n.t("volume");
     let archive_path = i18n.t("archive-path");
     let file_details = i18n.t("file-details");
-    let volume_value = i18n.t_args("volume-value", &[("number", entry.volume.to_string())]);
+    let volume_value = volume_option_label(entry.volume, i18n);
     let folder_name = if entry.folder == "根目录" {
         i18n.t("root")
     } else {
@@ -2922,6 +3567,7 @@ mod browser_tests {
             path: path.to_string(),
             bytes: Arc::from(vec![0u8; size]),
             compression: CompressionChoice::Dz,
+            volume: 0,
         }
     }
 
@@ -2944,7 +3590,14 @@ mod browser_tests {
         );
         assert_eq!(root_folders[0].file_count, 2);
         assert_eq!(root_folders[0].size, 100);
+        assert_eq!(root_folders[0].packed_size, Some(50));
+        assert_eq!(root_folders[0].volume, Some(0));
         assert_eq!(root_files[0].path, "readme.txt");
+
+        let mut split_entries = entries.clone();
+        split_entries[2].volume = 1;
+        let (split_folders, _) = build_browser_listing(&split_entries, "", "");
+        assert_eq!(split_folders[0].volume, None);
 
         let (data_folders, data_files) = build_browser_listing(&entries, "Data", "");
         assert_eq!(data_folders[0].path, "Data/Images");
@@ -2979,7 +3632,14 @@ mod browser_tests {
         );
         assert_eq!(root_folders[0].file_count, 2);
         assert_eq!(root_folders[0].size, 100);
+        assert_eq!(root_folders[0].packed_size, None);
+        assert_eq!(root_folders[0].volume, Some(0));
         assert_eq!(root_files[0].path, "readme.txt");
+
+        let mut split_files = files.clone();
+        split_files[2].volume = 1;
+        let (split_folders, _) = build_draft_browser_listing(&split_files, "");
+        assert_eq!(split_folders[0].volume, None);
 
         let (data_folders, data_files) = build_draft_browser_listing(&files, "Data");
         assert_eq!(data_folders[0].path, "Data/Images");
@@ -3000,6 +3660,116 @@ mod browser_tests {
         assert_eq!(
             join_archive_path("Data/Images", "icons/logo.png"),
             "Data/Images/icons/logo.png"
+        );
+    }
+
+    #[test]
+    fn removing_a_draft_folder_removes_all_descendants_only() {
+        let mut files = vec![
+            draft(1, "Data/config.json", 40),
+            draft(2, "Data/Images/logo.png", 60),
+            draft(3, "Database/index.bin", 20),
+            draft(4, "readme.txt", 10),
+        ];
+
+        remove_draft_folder(&mut files, "Data");
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Database/index.bin", "readme.txt"]
+        );
+    }
+
+    #[test]
+    fn selected_extraction_removes_the_current_parent_path() {
+        let files = vec![
+            ("Data/Images/UI/icon.png".to_string(), vec![1]),
+            ("Data/Images/UI/logo.png".to_string(), vec![2]),
+        ];
+
+        let rebased = rebase_extracted_files(files, Some("Data/Images"));
+
+        assert_eq!(
+            rebased
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["UI/icon.png", "UI/logo.png"]
+        );
+    }
+
+    #[test]
+    fn extraction_keeps_full_paths_for_root_or_mixed_selections() {
+        let files = vec![
+            ("Data/config.json".to_string(), vec![1]),
+            ("Sounds/theme.ogg".to_string(), vec![2]),
+        ];
+
+        assert_eq!(rebase_extracted_files(files.clone(), None), files);
+        assert_eq!(rebase_extracted_files(files.clone(), Some("Data")), files);
+    }
+
+    #[test]
+    fn dropped_archive_finds_the_main_file_and_sorted_volumes() {
+        let files = vec![
+            file_drop::DroppedFile {
+                path: "release/game.002".to_string(),
+                bytes: vec![2],
+            },
+            file_drop::DroppedFile {
+                path: "release/readme.txt".to_string(),
+                bytes: vec![9],
+            },
+            file_drop::DroppedFile {
+                path: "release/game.DZ".to_string(),
+                bytes: vec![0],
+            },
+            file_drop::DroppedFile {
+                path: "release/game.001".to_string(),
+                bytes: vec![1],
+            },
+        ];
+
+        let (main_name, main_bytes, auxiliary) = prepare_dropped_archive(files).unwrap();
+
+        assert_eq!(main_name, "game.DZ");
+        assert_eq!(main_bytes, vec![0]);
+        assert_eq!(
+            auxiliary,
+            vec![
+                ("game.001".to_string(), vec![1]),
+                ("game.002".to_string(), vec![2]),
+            ]
+        );
+    }
+
+    #[test]
+    fn dropped_archive_requires_exactly_one_main_file() {
+        let volume_only = vec![file_drop::DroppedFile {
+            path: "game.001".to_string(),
+            bytes: vec![1],
+        }];
+        assert_eq!(
+            prepare_dropped_archive(volume_only),
+            Err(DroppedArchiveError::NoMainArchive)
+        );
+
+        let multiple = vec![
+            file_drop::DroppedFile {
+                path: "one.dz".to_string(),
+                bytes: vec![1],
+            },
+            file_drop::DroppedFile {
+                path: "two.dzip".to_string(),
+                bytes: vec![2],
+            },
+        ];
+        assert_eq!(
+            prepare_dropped_archive(multiple),
+            Err(DroppedArchiveError::MultipleMainArchives)
         );
     }
 }

@@ -268,7 +268,7 @@ The project uses Rust 2024 and has an MSRV of Rust 1.85.
 
 This workspace is distributed through GitHub Releases rather than crates.io.
 All member crates inherit the workspace version, and a release tag such as
-`v0.4.1` must match that version before the release workflow builds artifacts.
+`v0.4.2` must match that version before the release workflow builds artifacts.
 
 ## License
 
