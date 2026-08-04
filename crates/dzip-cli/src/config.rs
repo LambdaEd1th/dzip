@@ -3,7 +3,6 @@ use dzip::format::{
     CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB,
 };
 use dzip::{ChunkEncoding, Compression};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::io;
@@ -17,7 +16,6 @@ pub enum ConfigError {
         context: Option<String>,
         source: io::Error,
     },
-    Toml(toml::de::Error),
     Invalid(String),
 }
 
@@ -45,7 +43,6 @@ impl fmt::Display for ConfigError {
                 context: None,
                 source,
             } => source.fmt(formatter),
-            Self::Toml(error) => error.fmt(formatter),
             Self::Invalid(message) => formatter.write_str(message),
         }
     }
@@ -55,7 +52,6 @@ impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::Toml(error) => Some(error),
             Self::Invalid(_) => None,
         }
     }
@@ -70,86 +66,38 @@ impl From<io::Error> for ConfigError {
     }
 }
 
-impl From<toml::de::Error> for ConfigError {
-    fn from(error: toml::de::Error) -> Self {
-        Self::Toml(error)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DzipConfig {
+#[derive(Debug, Clone)]
+pub struct DclConfig {
     pub archives: Vec<String>,
-    #[serde(default = "default_base_dir")]
-    pub base_dir: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub align: Option<u32>,
+    pub align: u32,
     pub files: Vec<FileEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<GlobalOptions>,
-    #[serde(skip)]
+    pub options: GlobalOptions,
     pub(crate) dcl_search_dirs: Vec<PathBuf>,
-    #[serde(skip)]
-    pub(crate) is_legacy_dcl: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FileEntry {
     pub path: PathBuf,
-    pub archive_file_index: u16,
-    pub compression: Compression,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    pub modifiers: String, // e.g., "to 25%"
-    #[serde(skip)]
-    pub source_base_dir: Option<PathBuf>,
-    #[serde(skip)]
-    pub(crate) dcl_range: Option<DclRange>,
-    #[serde(skip)]
-    pub(crate) dcl_flags: Option<u16>,
-    #[serde(skip)]
-    pub(crate) dcl_archive_file_index: Option<i32>,
+    pub archive_file_index: i32,
+    pub(crate) range: DclRange,
+    pub(crate) flags: u16,
 }
 
 impl FileEntry {
     pub fn byte_range(&self, total_len: usize) -> Result<(usize, usize)> {
-        if let Some(range) = self.dcl_range {
-            return range.resolve(total_len, &self.path);
-        }
-
-        let (from, to) = parse_file_modifiers(&self.modifiers)?;
-        let start = from
-            .map(|boundary| boundary.resolve(total_len))
-            .unwrap_or(0);
-        let end = to
-            .map(|boundary| boundary.resolve(total_len))
-            .unwrap_or(total_len);
-
-        if start > end {
-            return Err(ConfigError::invalid(format!(
-                "Invalid file modifiers '{}' for {}: from {} is after to {}",
-                self.modifiers,
-                self.path.display(),
-                start,
-                end
-            )));
-        }
-
-        Ok((start.min(total_len), end.min(total_len)))
+        self.range.resolve(total_len, &self.path)
     }
 
-    pub const fn dcl_flags(&self) -> Option<u16> {
-        self.dcl_flags
+    pub const fn dcl_flags(&self) -> u16 {
+        self.flags
     }
 
     pub fn selected_compression(&self) -> Option<Compression> {
-        self.dcl_flags
-            .map_or(Some(self.compression), dcl_compression)
+        dcl_compression(self.flags)
     }
 
     pub const fn requested_archive_file_index(&self) -> i32 {
-        match self.dcl_archive_file_index {
-            Some(index) => index,
-            None => self.archive_file_index as i32,
-        }
+        self.archive_file_index
     }
 }
 
@@ -191,50 +139,23 @@ impl DclRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileBoundary {
-    Bytes(usize),
-    Percent(u8),
-}
-
-impl FileBoundary {
-    fn resolve(self, total_len: usize) -> usize {
-        match self {
-            Self::Bytes(bytes) => bytes,
-            Self::Percent(percent) => total_len.saturating_mul(usize::from(percent)) / 100,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone)]
 pub struct GlobalOptions {
     pub method: String,
-    #[serde(alias = "isnotdefault")]
     pub is_not_default: bool,
     pub max_mem_usage: i32,
     pub use_combuf: bool,
     pub preprocess: bool,
     pub trim_reference_factor: i32,
-    #[serde(alias = "WinSize")]
     pub win_size: u8,
-    #[serde(alias = "Flags")]
     pub flags: u8,
-    #[serde(alias = "OffsetTableSize")]
     pub offset_table_size: u8,
-    #[serde(alias = "OffsetTables")]
     pub offset_tables: u8,
-    #[serde(alias = "OffsetContexts")]
     pub offset_contexts: u8,
-    #[serde(alias = "RefLengthTableSize")]
     pub ref_length_table_size: u8,
-    #[serde(alias = "RefLengthTables")]
     pub ref_length_tables: u8,
-    #[serde(alias = "RefOffsetTableSize")]
     pub ref_offset_table_size: u8,
-    #[serde(alias = "RefOffsetTables")]
     pub ref_offset_tables: u8,
-    #[serde(alias = "BigMinMatch")]
     pub big_min_match: u8,
 }
 
@@ -261,28 +182,28 @@ impl Default for GlobalOptions {
     }
 }
 
-fn default_base_dir() -> PathBuf {
-    PathBuf::from(".")
-}
-
-pub fn parse_config(path: &Path) -> Result<DzipConfig> {
+pub fn parse_config(path: &Path) -> Result<DclConfig> {
     parse_config_with_commands(path, &[])
 }
 
-pub fn parse_config_with_commands(path: &Path, commands: &[String]) -> Result<DzipConfig> {
-    if path.extension().is_some_and(|ext| ext == "toml") {
-        let content = std::fs::read_to_string(path)?;
-        return Ok(toml::from_str(&content)?);
+pub fn parse_config_with_commands(path: &Path, commands: &[String]) -> Result<DclConfig> {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dcl"))
+    {
+        return Err(ConfigError::invalid(format!(
+            "Dzip build configuration must use the .dcl extension: {}",
+            path.display()
+        )));
     }
 
-    let mut config = DzipConfig {
+    let mut config = DclConfig {
         archives: Vec::new(),
-        base_dir: default_base_dir(),
-        align: Some(0),
+        align: 0,
         files: Vec::new(),
-        options: Some(GlobalOptions::default()),
+        options: GlobalOptions::default(),
         dcl_search_dirs: Vec::new(),
-        is_legacy_dcl: true,
     };
 
     let root_path = if path.is_absolute() {
@@ -309,7 +230,7 @@ pub fn parse_config_with_commands(path: &Path, commands: &[String]) -> Result<Dz
 }
 
 struct DclParser<'a> {
-    config: &'a mut DzipConfig,
+    config: &'a mut DclConfig,
     root_dir: PathBuf,
     include_stack: HashSet<PathBuf>,
     options_selected: bool,
@@ -318,7 +239,7 @@ struct DclParser<'a> {
 impl DclParser<'_> {
     fn parse_file(&mut self, path: &Path, is_root: bool) -> Result<()> {
         // dzip.exe resets alignment every time a master file is entered.
-        self.config.align = Some(0);
+        self.config.align = 0;
 
         let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if !self.include_stack.insert(canonical_path.clone()) {
@@ -361,7 +282,7 @@ impl DclParser<'_> {
             "archive" => self.config.archives.push(parts[1].replace('\\', "/")),
             "align" => {
                 let value = atoi_compat(&parts[1]);
-                self.config.align = Some(u32::try_from(value).unwrap_or(0));
+                self.config.align = u32::try_from(value).unwrap_or(0);
             }
             "master" => {
                 let include = PathBuf::from(parts[1].replace('\\', "/"));
@@ -384,11 +305,11 @@ impl DclParser<'_> {
             "file" if parts.len() >= 3 => self.parse_file_directive(&parts),
             "options" if parts[1].eq_ignore_ascii_case("dz") => {
                 self.options_selected = true;
-                current_options(self.config).method = "dz".to_string();
+                self.config.options.method = "dz".to_string();
             }
             "options" => {}
             key if self.options_selected => {
-                set_dcl_option(current_options(self.config), key, &parts[1]);
+                set_dcl_option(&mut self.config.options, key, &parts[1]);
             }
             _ => {}
         }
@@ -432,19 +353,11 @@ impl DclParser<'_> {
 
         self.config.files.push(FileEntry {
             path,
-            archive_file_index: u16::try_from(dcl_archive_file_index).unwrap_or(0),
-            compression: dcl_compression(flags).unwrap_or(Compression::Dz),
-            modifiers: String::new(),
-            source_base_dir: None,
-            dcl_range: Some(range),
-            dcl_flags: Some(flags),
-            dcl_archive_file_index: Some(dcl_archive_file_index),
+            archive_file_index: dcl_archive_file_index,
+            range,
+            flags,
         });
     }
-}
-
-fn current_options(config: &mut DzipConfig) -> &mut GlobalOptions {
-    config.options.get_or_insert_with(GlobalOptions::default)
 }
 
 fn set_dcl_option(options: &mut GlobalOptions, key: &str, value: &str) {
@@ -604,114 +517,10 @@ fn tokenize_dcl_line(line: &str) -> Vec<String> {
     tokens
 }
 
-fn parse_file_modifiers(modifiers: &str) -> Result<(Option<FileBoundary>, Option<FileBoundary>)> {
-    let mut from = None;
-    let mut to = None;
-    let mut tokens = modifiers.split_whitespace();
-
-    while let Some(token) = tokens.next() {
-        match token.to_ascii_lowercase().as_str() {
-            "from" => {
-                let value = tokens.next().ok_or_else(|| {
-                    ConfigError::invalid(format!(
-                        "Missing value after 'from' in modifiers '{}'",
-                        modifiers
-                    ))
-                })?;
-                if from
-                    .replace(parse_file_boundary(value, modifiers)?)
-                    .is_some()
-                {
-                    return Err(ConfigError::invalid(format!(
-                        "Duplicate 'from' modifier in '{}'",
-                        modifiers
-                    )));
-                }
-            }
-            "to" => {
-                let value = tokens.next().ok_or_else(|| {
-                    ConfigError::invalid(format!(
-                        "Missing value after 'to' in modifiers '{}'",
-                        modifiers
-                    ))
-                })?;
-                if to.replace(parse_file_boundary(value, modifiers)?).is_some() {
-                    return Err(ConfigError::invalid(format!(
-                        "Duplicate 'to' modifier in '{}'",
-                        modifiers
-                    )));
-                }
-            }
-            _ => {
-                return Err(ConfigError::invalid(format!(
-                    "Unsupported file modifier '{}' in '{}'",
-                    token, modifiers
-                )));
-            }
-        }
-    }
-
-    Ok((from, to))
-}
-
-fn parse_file_boundary(value: &str, modifiers: &str) -> Result<FileBoundary> {
-    if let Some(trimmed) = value.strip_suffix('%') {
-        let percent = trimmed.parse::<u8>().map_err(|_| {
-            ConfigError::invalid(format!(
-                "Invalid percentage '{}' in modifiers '{}'",
-                value, modifiers
-            ))
-        })?;
-        if percent > 100 {
-            return Err(ConfigError::invalid(format!(
-                "Percentage '{}' in '{}' exceeds 100",
-                value, modifiers
-            )));
-        }
-        Ok(FileBoundary::Percent(percent))
-    } else {
-        let bytes = value.parse::<usize>().map_err(|_| {
-            ConfigError::invalid(format!(
-                "Invalid byte offset '{}' in modifiers '{}'",
-                value, modifiers
-            ))
-        })?;
-        Ok(FileBoundary::Bytes(bytes))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn entry(modifiers: &str) -> FileEntry {
-        FileEntry {
-            path: PathBuf::from("payload.bin"),
-            archive_file_index: 0,
-            compression: Compression::Copy,
-            modifiers: modifiers.to_string(),
-            source_base_dir: None,
-            dcl_range: None,
-            dcl_flags: None,
-            dcl_archive_file_index: None,
-        }
-    }
-
-    #[test]
-    fn bare_slice_values_are_absolute_byte_offsets() {
-        assert_eq!(entry("from 25 to 75").byte_range(200).unwrap(), (25, 75));
-    }
-
-    #[test]
-    fn percent_suffix_selects_percentage_offsets() {
-        assert_eq!(entry("from 25% to 75%").byte_range(200).unwrap(), (50, 150));
-    }
-
-    #[test]
-    fn byte_and_percentage_offsets_can_be_mixed() {
-        assert_eq!(entry("from 25 to 75%").byte_range(200).unwrap(), (25, 150));
-    }
 
     #[test]
     fn dcl_tokenizer_supports_original_quoted_and_escaped_tokens() {
@@ -748,12 +557,12 @@ WinSize 260
         assert_eq!(file.selected_compression(), Some(Compression::Bzip));
         assert_eq!(
             file.dcl_flags(),
-            Some(CHUNK_ZLIB | CHUNK_BZIP | CHUNK_RANDOMACCESS | CHUNK_JPEG)
+            CHUNK_ZLIB | CHUNK_BZIP | CHUNK_RANDOMACCESS | CHUNK_JPEG
         );
         // '#' is not a comment delimiter in dzip.exe. The later "to" token
         // therefore remains active and changes the range.
         assert_eq!(file.byte_range(200).unwrap(), (50, 150));
-        let options = config.options.unwrap();
+        let options = config.options;
         assert!(options.use_combuf);
         assert_eq!(options.win_size, 4);
 
@@ -781,8 +590,7 @@ WinSize 260
             config.dcl_search_dirs,
             [root.join("first"), root.join("second")]
         );
-        assert_eq!(config.align, Some(64));
-        assert!(config.files[0].source_base_dir.is_none());
+        assert_eq!(config.align, 64);
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -805,8 +613,8 @@ WinSize 260
 
         let config = parse_config_with_commands(&config_path, &commands).unwrap();
         assert_eq!(config.archives, ["first.dz", "second.dz"]);
-        assert_eq!(config.align, Some(32));
-        let options = config.options.unwrap();
+        assert_eq!(config.align, 32);
+        let options = config.options;
         assert!(options.use_combuf);
         assert!(!options.preprocess);
 
@@ -821,6 +629,19 @@ WinSize 260
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].len(), 255);
         assert_eq!(lines[1].len(), 45);
+    }
+
+    #[test]
+    fn toml_manifests_are_rejected() {
+        let root = unique_temp_dir("toml-rejected");
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("pack.toml");
+        std::fs::write(&config_path, "archives = [\"output.dz\"]\n").unwrap();
+
+        let error = parse_config(&config_path).unwrap_err();
+        assert!(error.to_string().contains("must use the .dcl extension"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

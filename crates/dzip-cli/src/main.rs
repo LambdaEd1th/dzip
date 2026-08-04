@@ -31,9 +31,9 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Build archives from a TOML manifest or Dzip .dcl file
+    /// Build archives from a Dzip .dcl configuration
     Build {
-        /// TOML manifest or legacy Dzip .dcl configuration
+        /// Dzip .dcl configuration
         input: String,
         /// The output directory
         #[arg(short, long, default_value = ".")]

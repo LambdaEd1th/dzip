@@ -9,9 +9,7 @@ description = "Modern command-line builder, creator, extractor, and inspector fo
 readme = "../../README.md"
 
 [dependencies]
-dzip = { workspace = true, features = ["parallel", "serde"] }
+dzip = { workspace = true, features = ["parallel"] }
 clap = { version = "4.6.4", features = ["derive"] }
-serde.workspace = true
-toml = "1.1.4"
 log.workspace = true
 env_logger = "0.11"
