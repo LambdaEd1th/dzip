@@ -15,10 +15,17 @@ version = "0.4.1"
 edition = "2024"
 repository = "https://github.com/LambdaEd1th/dzip-rs"
 license = "AGPL-3.0-or-later"
+# Releases are distributed as GitHub artifacts rather than registry packages.
+publish = false
 
 [workspace.dependencies]
+bzip = { path = "crates/codecs/bzip" }
+dzip = { path = "crates/dzip" }
+dz = { path = "crates/codecs/dz", default-features = false }
 log = "0.4"
+lzma = { path = "crates/codecs/lzma" }
 serde = { version = "1", features = ["derive"] }
+zlib = { path = "crates/codecs/zlib" }
 
 [profile.release]
 lto = true
