@@ -208,10 +208,16 @@ between native desktop builds and the browser. It can open and inspect archives,
 search and select entries, extract files, and create new archives with DZ, Zlib,
 Bzip, LZMA, copy, or zero-fill encoding.
 
-Install the Dioxus CLI, then start the desktop app:
+Install the Dioxus CLI and the Web Worker builder:
 
 ```bash
 cargo install dioxus-cli --version 0.7.10 --locked
+cargo install wasm-pack --version 0.15.0 --locked
+```
+
+Then start the desktop app:
+
+```bash
 cd crates/dzip-gui
 dx serve --desktop
 ```
@@ -219,15 +225,21 @@ dx serve --desktop
 Start the WebAssembly version:
 
 ```bash
-cd crates/dzip-gui
-dx serve --web
+./scripts/serve-web.sh
 ```
 
 The desktop build saves archives with the native file dialog and extracts to a
-chosen directory. The web build processes files entirely in WebAssembly,
-downloads created `.dz` archives directly, and bundles extracted entries into a
-browser-friendly ZIP download. Select the main `.dz` file and its auxiliary
-volumes together when opening a split archive.
+chosen directory. Archive parsing, compression, and extraction run outside the
+Dioxus UI thread: desktop builds use a background thread plus parallel per-file
+codec work, while the browser uses a pool of one to four Web Workers. This keeps
+animations and input responsive during long operations without requiring
+`SharedArrayBuffer` or cross-origin isolation.
+
+The web build processes files entirely in WebAssembly, downloads created `.dz`
+archives directly, and bundles extracted entries into a browser-friendly ZIP
+download. Select the main `.dz` file and its auxiliary volumes together when
+opening a split archive. Run `./scripts/build-web-worker.sh` before a manual
+`dx build --platform web`; `./scripts/serve-web.sh` does this automatically.
 
 ## Workspace
 
@@ -242,6 +254,7 @@ crates/
 │       └── format/       On-disk structures and constants
 ├── dzip-cli/             CLI and manifest adapter
 ├── dzip-gui/             Dioxus desktop and WebAssembly archive manager
+├── dzip-worker/          Browser Worker runtime for archive operations
 └── codecs/
     ├── bzip/             Standard BZip2 engine
     ├── lzma/             LZMA1 engine

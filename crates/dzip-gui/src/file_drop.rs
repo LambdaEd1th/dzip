@@ -32,44 +32,62 @@ pub fn drag_has_files(event: &DragEvent) -> bool {
 }
 
 pub async fn read_dropped_files(event: &DragEvent) -> Result<Vec<DroppedFile>, String> {
-    #[cfg(feature = "web")]
-    if let Some(files) = collect_web_dropped_directory_files(event).await? {
-        return Ok(files);
+    #[cfg(feature = "desktop")]
+    {
+        let paths = event
+            .files()
+            .into_iter()
+            .map(|file| (file.path(), file.name()))
+            .collect::<Vec<_>>();
+        crate::task::run_cpu_task(move || read_native_dropped_paths(paths)).await?
     }
 
-    let mut dropped = Vec::new();
-    for file in event.files() {
-        #[cfg(feature = "desktop")]
-        {
-            let path = file.path();
-            if path.is_dir() {
-                collect_native_directory(&path, &mut dropped)?;
-                continue;
-            }
-            if path.is_file() {
-                dropped.push(DroppedFile {
-                    path: file.name(),
-                    bytes: std::fs::read(&path)
-                        .map_err(|error| format!("无法读取 {}：{error}", path.display()))?,
-                });
-                continue;
-            }
+    #[cfg(feature = "web")]
+    {
+        if let Some(files) = collect_web_dropped_directory_files(event).await? {
+            return Ok(files);
         }
 
-        let path = file_data_display_path(&file);
-        let bytes = file
-            .read_bytes()
-            .await
-            .map_err(|error| format!("无法读取 {path}：{error}"))?;
-        dropped.push(DroppedFile {
-            path,
-            bytes: bytes.to_vec(),
-        });
+        let mut dropped = Vec::new();
+        for file in event.files() {
+            let path = file_data_display_path(&file);
+            let bytes = file
+                .read_bytes()
+                .await
+                .map_err(|error| format!("无法读取 {path}：{error}"))?;
+            dropped.push(DroppedFile {
+                path,
+                bytes: bytes.to_vec(),
+            });
+        }
+        dropped.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(dropped)
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn read_native_dropped_paths(
+    paths: Vec<(std::path::PathBuf, String)>,
+) -> Result<Vec<DroppedFile>, String> {
+    let mut dropped = Vec::new();
+    for (path, name) in paths {
+        if path.is_dir() {
+            collect_native_directory(&path, &mut dropped)?;
+        } else if path.is_file() {
+            dropped.push(DroppedFile {
+                path: name,
+                bytes: std::fs::read(&path)
+                    .map_err(|error| format!("无法读取 {}：{error}", path.display()))?,
+            });
+        } else {
+            return Err(format!("无法读取不存在的拖放路径：{}", path.display()));
+        }
     }
     dropped.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(dropped)
 }
 
+#[cfg(feature = "web")]
 fn file_data_display_path(file: &dioxus::html::FileData) -> String {
     let path = normalise_drop_path(&file.path().to_string_lossy());
     if path.is_empty() { file.name() } else { path }

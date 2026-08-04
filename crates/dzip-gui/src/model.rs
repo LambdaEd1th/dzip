@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,7 +7,7 @@ pub enum WorkspacePage {
     Create,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryView {
     pub id: usize,
     pub path: String,
@@ -45,7 +46,7 @@ pub struct DraftFile {
 /// `max_common_match == 0` represents the engine's unlimited setting. The
 /// static-table flag is exposed separately because the other on-disk flag is
 /// rejected by dzip.exe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DzCompressionOptions {
     pub max_mem_usage: i32,
     pub use_combuf: bool,
@@ -86,7 +87,7 @@ impl Default for DzCompressionOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompressionChoice {
     Dz,
     Zlib,

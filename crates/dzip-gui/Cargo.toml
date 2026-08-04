@@ -27,13 +27,17 @@ name = "dzip-gui"
 path = "src/main.rs"
 
 [dependencies]
-dioxus = { version = "0.7", default-features = false, features = ["asset", "document", "hooks", "html", "launch", "logger", "macro", "signals", "warnings"] }
+dioxus = { version = "0.7", optional = true, default-features = false, features = ["asset", "document", "hooks", "html", "launch", "logger", "macro", "signals", "warnings"] }
 dzip.workspace = true
 crc32fast = "1.5"
-fluent-bundle = "0.16"
-log.workspace = true
+fluent-bundle = { version = "0.16", optional = true }
+futures-timer = { version = "3", optional = true }
+log = { workspace = true, optional = true }
 rfd = { version = "0.17", optional = true, default-features = false, features = ["xdg-portal"] }
-unic-langid = "0.9"
+serde.workspace = true
+serde-wasm-bindgen = { version = "0.6", optional = true }
+serde_bytes.workspace = true
+unic-langid = { version = "0.9", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
@@ -45,6 +49,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "DataTransferItemList",
     "Document",
     "DragEvent",
+    "ErrorEvent",
     "File",
     "FileList",
     "FileSystemDirectoryEntry",
@@ -54,14 +59,38 @@ web-sys = { version = "0.3", optional = true, features = [
     "HtmlAnchorElement",
     "HtmlElement",
     "Location",
+    "MessageEvent",
     "Navigator",
     "Storage",
     "Url",
     "Window",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
 ] }
 
 [features]
 default = ["desktop"]
 bundle = []
-desktop = ["dioxus/desktop", "dzip/parallel", "dep:rfd"]
-web = ["dioxus/web", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+desktop = [
+    "dep:dioxus",
+    "dioxus/desktop",
+    "dzip/parallel",
+    "dep:fluent-bundle",
+    "dep:futures-timer",
+    "dep:log",
+    "dep:rfd",
+    "dep:unic-langid",
+]
+web = [
+    "dep:dioxus",
+    "dioxus/web",
+    "dep:fluent-bundle",
+    "dep:js-sys",
+    "dep:log",
+    "dep:serde-wasm-bindgen",
+    "dep:unic-langid",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+]

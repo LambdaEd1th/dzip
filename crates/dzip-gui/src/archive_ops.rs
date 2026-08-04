@@ -1,5 +1,4 @@
 use crate::model::{CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive};
-#[cfg(any(feature = "web", test))]
 use crc32fast::Hasher;
 use dzip::{
     Archive, ArchiveBuilder, Compression, DzOptions, EntryId, EntryOptions, MemoryVolumeSource,
@@ -7,7 +6,6 @@ use dzip::{
 };
 use std::collections::HashSet;
 use std::io::Cursor;
-#[cfg(any(feature = "web", test))]
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -224,7 +222,6 @@ pub fn normalise_archive_name(value: &str) -> String {
     }
 }
 
-#[cfg(any(feature = "web", test))]
 pub fn make_store_zip(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     if files.len() > u16::MAX as usize {
         return Err("网页端一次最多导出 65535 个文件".to_string());
@@ -305,14 +302,12 @@ pub fn make_store_zip(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-#[cfg(any(feature = "web", test))]
 fn write_u16(output: &mut Vec<u8>, value: u16) -> Result<(), String> {
     output
         .write_all(&value.to_le_bytes())
         .map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "web", test))]
 fn write_u32(output: &mut Vec<u8>, value: u32) -> Result<(), String> {
     output
         .write_all(&value.to_le_bytes())

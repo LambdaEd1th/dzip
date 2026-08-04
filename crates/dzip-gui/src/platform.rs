@@ -10,8 +10,12 @@ pub async fn save_bytes(file_name: &str, bytes: Vec<u8>) -> Result<String, Strin
     else {
         return Err("已取消保存".to_string());
     };
-    std::fs::write(handle.path(), bytes).map_err(|error| format!("保存失败：{error}"))?;
-    Ok(handle.path().display().to_string())
+    let path = handle.path().to_path_buf();
+    crate::task::run_cpu_task(move || {
+        std::fs::write(&path, bytes).map_err(|error| format!("保存失败：{error}"))?;
+        Ok(path.display().to_string())
+    })
+    .await?
 }
 
 #[cfg(feature = "web")]
@@ -60,21 +64,25 @@ pub async fn export_files(
     else {
         return Err("已取消解压".to_string());
     };
-    let root = folder.path();
-    for (relative, bytes) in &files {
-        let target = safe_join(root, relative)?;
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("无法创建目录 {}：{error}", parent.display()))?;
+    let root = folder.path().to_path_buf();
+    let archive_name = archive_name.to_string();
+    crate::task::run_cpu_task(move || {
+        for (relative, bytes) in &files {
+            let target = safe_join(&root, relative)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("无法创建目录 {}：{error}", parent.display()))?;
+            }
+            std::fs::write(&target, bytes)
+                .map_err(|error| format!("无法写入 {}：{error}", target.display()))?;
         }
-        std::fs::write(&target, bytes)
-            .map_err(|error| format!("无法写入 {}：{error}", target.display()))?;
-    }
-    Ok(format!(
-        "已从 {archive_name} 解压 {} 个文件到 {}",
-        files.len(),
-        root.display()
-    ))
+        Ok(format!(
+            "已从 {archive_name} 解压 {} 个文件到 {}",
+            files.len(),
+            root.display()
+        ))
+    })
+    .await?
 }
 
 #[cfg(feature = "web")]
@@ -83,7 +91,7 @@ pub async fn export_files(
     files: Vec<(String, Vec<u8>)>,
 ) -> Result<String, String> {
     let count = files.len();
-    let zip = crate::archive_ops::make_store_zip(&files)?;
+    let zip = crate::background::make_store_zip(files).await?;
     let stem = archive_name
         .strip_suffix(".dz")
         .or_else(|| archive_name.strip_suffix(".DZ"))

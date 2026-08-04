@@ -6,25 +6,30 @@ compile_error!("features `desktop` and `web` are mutually exclusive");
 compile_error!("enable either the `desktop` or `web` feature");
 
 mod app_i18n;
-mod archive_ops;
+mod background;
 mod file_drop;
 mod i18n;
-mod model;
 mod platform;
 mod preferences;
+mod task;
+#[cfg(feature = "web")]
+mod worker_client;
 
-use archive_ops::{build_archive, normalise_archive_name, open_archive, read_entries};
+use background::{build_archive, open_archive, read_entries};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
-use i18n::{I18n, Locale};
-use model::{
+use dzip_gui::archive_ops::normalise_archive_name;
+use dzip_gui::model::{
     CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive, WorkspacePage,
     human_size, ratio_percent,
 };
+use i18n::{I18n, Locale};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
+#[cfg(feature = "web")]
+const _: Asset = asset!("/assets/worker", AssetOptions::folder());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FolderView {
@@ -33,6 +38,7 @@ struct FolderView {
     file_count: usize,
     size: u64,
     packed_size: u64,
+    entry_ids: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -819,10 +825,12 @@ fn build_browser_listing(
                     file_count: 0,
                     size: 0,
                     packed_size: 0,
+                    entry_ids: Vec::new(),
                 });
             folder.file_count += 1;
             folder.size = folder.size.saturating_add(entry.size);
             folder.packed_size = folder.packed_size.saturating_add(entry.packed_size);
+            folder.entry_ids.push(entry.id);
         } else if !relative.is_empty() {
             files.push(entry.clone());
         }
@@ -832,6 +840,120 @@ fn build_browser_listing(
     folders.sort_by_key(|folder| folder.name.to_lowercase());
     files.sort_by_key(|entry| entry.name.to_lowercase());
     (folders, files)
+}
+
+fn build_draft_browser_listing(
+    files: &[DraftFile],
+    current_dir: &str,
+) -> (Vec<FolderView>, Vec<DraftFile>) {
+    let current_dir = current_dir.trim_matches('/');
+    let prefix = if current_dir.is_empty() {
+        String::new()
+    } else {
+        format!("{current_dir}/")
+    };
+    let mut folder_map = BTreeMap::<String, FolderView>::new();
+    let mut visible_files = Vec::new();
+
+    for file in files {
+        let path = file.path.trim_matches('/');
+        let Some(relative) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        if let Some((folder_name, _)) = relative.split_once('/') {
+            if folder_name.is_empty() {
+                continue;
+            }
+            let folder_path = if current_dir.is_empty() {
+                folder_name.to_string()
+            } else {
+                format!("{current_dir}/{folder_name}")
+            };
+            let folder = folder_map
+                .entry(folder_path.clone())
+                .or_insert_with(|| FolderView {
+                    name: folder_name.to_string(),
+                    path: folder_path,
+                    file_count: 0,
+                    size: 0,
+                    packed_size: 0,
+                    entry_ids: Vec::new(),
+                });
+            folder.file_count += 1;
+            folder.size = folder.size.saturating_add(file.bytes.len() as u64);
+        } else if !relative.is_empty() {
+            visible_files.push(file.clone());
+        }
+    }
+
+    let mut folders: Vec<FolderView> = folder_map.into_values().collect();
+    folders.sort_by_key(|folder| folder.name.to_lowercase());
+    visible_files.sort_by_key(|file| draft_file_name(&file.path).to_lowercase());
+    (folders, visible_files)
+}
+
+fn entry_ids_in_directory(entries: &[EntryView], directory: &str) -> Vec<usize> {
+    let directory = directory.trim_matches('/');
+    if directory.is_empty() {
+        return entries.iter().map(|entry| entry.id).collect();
+    }
+    let prefix = format!("{directory}/");
+    entries
+        .iter()
+        .filter(|entry| entry.path.trim_matches('/').starts_with(&prefix))
+        .map(|entry| entry.id)
+        .collect()
+}
+
+fn browser_breadcrumbs(current_dir: &str) -> Vec<BrowserCrumb> {
+    let mut breadcrumb_path = String::new();
+    current_dir
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if !breadcrumb_path.is_empty() {
+                breadcrumb_path.push('/');
+            }
+            breadcrumb_path.push_str(part);
+            BrowserCrumb {
+                name: part.to_string(),
+                path: breadcrumb_path.clone(),
+            }
+        })
+        .collect()
+}
+
+fn parent_browser_directory(current_dir: &str) -> String {
+    current_dir
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_default()
+}
+
+fn draft_file_name(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+}
+
+fn replace_draft_file_name(path: &str, file_name: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit_once('/')
+        .map(|(parent, _)| format!("{parent}/{file_name}"))
+        .unwrap_or_else(|| file_name.to_string())
+}
+
+fn join_archive_path(directory: &str, path: &str) -> String {
+    let directory = directory.trim_matches('/');
+    let path = path.trim_matches('/');
+    if directory.is_empty() {
+        path.to_string()
+    } else if path.is_empty() {
+        directory.to_string()
+    } else {
+        format!("{directory}/{path}")
+    }
 }
 
 #[component]
@@ -921,7 +1043,7 @@ fn BrowsePage(
                                         lower.ends_with(".dz") || lower.ends_with(".dzip")
                                     }).unwrap_or(0);
                                     let (main_name, main_bytes) = loaded.remove(main_index);
-                                    match open_archive(main_name.clone(), main_bytes, loaded) {
+                                    match open_archive(main_name.clone(), main_bytes, loaded).await {
                                         Ok(value) => {
                                             focused_entry.set(None);
                                             archive.set(Some(value));
@@ -958,25 +1080,8 @@ fn BrowsePage(
     let current_dir = browse_path();
     let (folders, visible) =
         build_browser_listing(archive_value.entries.as_ref(), &current_dir, &query);
-    let mut breadcrumb_path = String::new();
-    let breadcrumbs: Vec<BrowserCrumb> = current_dir
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            if !breadcrumb_path.is_empty() {
-                breadcrumb_path.push('/');
-            }
-            breadcrumb_path.push_str(part);
-            BrowserCrumb {
-                name: part.to_string(),
-                path: breadcrumb_path.clone(),
-            }
-        })
-        .collect();
-    let parent_dir = current_dir
-        .rsplit_once('/')
-        .map(|(parent, _)| parent.to_string())
-        .unwrap_or_default();
+    let breadcrumbs = browser_breadcrumbs(&current_dir);
+    let parent_dir = parent_browser_directory(&current_dir);
     let selected_count = selected.read().len();
     let selected_bytes: u64 = archive_value
         .entries
@@ -984,10 +1089,15 @@ fn BrowsePage(
         .filter(|entry| selected.read().contains(&entry.id))
         .map(|entry| entry.size)
         .sum();
-    let all_visible_selected = !visible.is_empty()
-        && visible
+    let selectable_entry_ids = if query.is_empty() {
+        entry_ids_in_directory(archive_value.entries.as_ref(), &current_dir)
+    } else {
+        visible.iter().map(|entry| entry.id).collect()
+    };
+    let all_visible_selected = !selectable_entry_ids.is_empty()
+        && selectable_entry_ids
             .iter()
-            .all(|entry| selected.read().contains(&entry.id));
+            .all(|id| selected.read().contains(id));
     let focused = focused_entry()
         .and_then(|id| archive_value.entries.iter().find(|entry| entry.id == id))
         .cloned();
@@ -1080,7 +1190,7 @@ fn BrowsePage(
                             );
                             busy.set(Some(preparing));
                             let ids: Vec<usize> = archive_value.entries.iter().map(|entry| entry.id).collect();
-                            match read_entries(&archive_value, &ids) {
+                            match read_entries(&archive_value, &ids).await {
                                 Ok(files) => {
                                     let method = archive_value
                                         .entries
@@ -1239,10 +1349,10 @@ fn BrowsePage(
                             input {
                                 r#type: "checkbox",
                                 checked: all_visible_selected,
-                                disabled: visible.is_empty(),
+                                disabled: selectable_entry_ids.is_empty(),
                                 aria_label: select_visible,
                                 onchange: move |_| {
-                                    let ids: Vec<usize> = visible.iter().map(|entry| entry.id).collect();
+                                    let ids = selectable_entry_ids.clone();
                                     let mut selected_set = selected.write();
                                     if all_visible_selected {
                                         for id in ids { selected_set.remove(&id); }
@@ -1268,6 +1378,7 @@ fn BrowsePage(
                         FolderRow {
                             key: "{folder.path}",
                             folder: folder.clone(),
+                            selected: selected,
                             browse_path: browse_path,
                             focused_entry: focused_entry,
                         }
@@ -1328,11 +1439,17 @@ fn CreatePage(
     let i18n = I18n::new(current_locale);
     let mut open_select_menu = use_signal(|| None::<OpenSelectMenu>);
     let mut dz_advanced_open = use_signal(|| false);
+    let mut draft_browse_path = use_signal(String::new);
     let total_size: u64 = draft_files
         .read()
         .iter()
         .map(|file| file.bytes.len() as u64)
         .sum();
+    let draft_current_dir = draft_browse_path();
+    let (draft_folders, visible_draft_files) =
+        build_draft_browser_listing(&draft_files.read(), &draft_current_dir);
+    let draft_breadcrumbs = browser_breadcrumbs(&draft_current_dir);
+    let draft_parent_dir = parent_browser_directory(&draft_current_dir);
     let current_compression = compression();
     let current_dz_options = dz_options();
     let has_dz_entries = draft_files
@@ -1376,6 +1493,23 @@ fn CreatePage(
     let archive_settings = i18n.t("archive-settings");
     let per_file_hint = i18n.t("per-file-hint");
     let archive_name_label = i18n.t("archive-name");
+    let parent_folder = i18n.t("go-parent-folder");
+    let parent_label = i18n.t("go-back");
+    let archive_path_label = i18n.t("archive-path");
+    let root_label = i18n.t("root");
+    let name_label = i18n.t("name");
+    let original_size = i18n.t("original-size");
+    let algorithm_label = i18n.t("algorithm");
+    let empty_folder = i18n.t("empty-folder");
+    let empty_folder_hint = i18n.t("empty-folder-hint");
+    let browse_hint = i18n.t("draft-browse-hint");
+    let draft_directory_summary = i18n.t_args(
+        "directory-summary",
+        &[
+            ("folders", draft_folders.len().to_string()),
+            ("files", visible_draft_files.len().to_string()),
+        ],
+    );
     let default_algorithm = i18n.t("default-algorithm");
     let apply_all = i18n.t("apply-all");
     let alignment_label = i18n.t("data-alignment");
@@ -1432,10 +1566,10 @@ fn CreatePage(
                             align,
                             random,
                             dz,
-                        ) {
-                            Ok(bytes) => {
-                                let reopened =
-                                    open_archive(name.clone(), bytes.clone(), Vec::new());
+                        )
+                        .await
+                        {
+                            Ok((bytes, reopened)) => {
                                 busy.set(Some(i18n.t("saving-archive")));
                                 match platform::save_bytes(&name, bytes).await {
                                     Ok(_) => {
@@ -1445,9 +1579,7 @@ fn CreatePage(
                                         );
                                         append_log(logs, "INFO", &message);
                                         toast.set(Some((true, message)));
-                                        if let Ok(value) = reopened {
-                                            on_saved.call(value);
-                                        }
+                                        on_saved.call(reopened);
                                     }
                                     Err(message) if message == "已取消保存" => {}
                                     Err(message) => {
@@ -1494,7 +1626,12 @@ fn CreatePage(
                     }
                     div { class: "draft-actions",
                         if !draft_files.read().is_empty() {
-                            button { class: "text-button danger", onclick: move |_| draft_files.write().clear(),
+                            button {
+                                class: "text-button danger",
+                                onclick: move |_| {
+                                    draft_files.write().clear();
+                                    draft_browse_path.set(String::new());
+                                },
                                 Icon { name: IconName::Trash, size: 15 }
                                 "{clear_label}"
                             }
@@ -1504,12 +1641,14 @@ fn CreatePage(
                             next_id: next_id,
                             default_compression: current_compression,
                             directory: false,
+                            destination: draft_current_dir.clone(),
                         }
                         UploadButton {
                             draft_files: draft_files,
                             next_id: next_id,
                             default_compression: current_compression,
                             directory: true,
+                            destination: draft_current_dir.clone(),
                         }
                     }
                 }
@@ -1526,55 +1665,93 @@ fn CreatePage(
                             multiple: true,
                             onchange: move |event| {
                                 let files = event.files();
+                                let destination = draft_current_dir.clone();
                                 async move {
-                                    add_uploaded_files(files, draft_files, next_id, current_compression, false).await;
+                                    add_uploaded_files(
+                                        files,
+                                        draft_files,
+                                        next_id,
+                                        current_compression,
+                                        false,
+                                        &destination,
+                                    )
+                                    .await;
                                 }
                             }
                         }
                     }
                 } else {
-                    div {
-                        class: if matches!(open_select_menu(), Some(OpenSelectMenu::Compression(_))) { "draft-list menu-open" } else { "draft-list" },
-                        for file in draft_files.read().iter() {
-                            div {
-                                class: if open_select_menu() == Some(OpenSelectMenu::Compression(file.id)) { "draft-row dropdown-open" } else { "draft-row" },
-                                key: "{file.id}",
-                                div { class: "file-type-icon", Icon { name: icon_for_file(&file.path), size: 19 } }
-                                div { class: "draft-name",
-                                    input {
-                                        class: "draft-path-input",
-                                        value: "{file.path}",
-                                        aria_label: i18n.t_args("edit-archive-path-label", &[("path", file.path.clone())]),
-                                        title: i18n.t("edit-archive-path"),
-                                        oninput: {
-                                            let id = file.id;
-                                            move |event| {
-                                                if let Some(item) = draft_files.write().iter_mut().find(|item| item.id == id) {
-                                                    item.path = event.value();
-                                                }
-                                            }
-                                        },
-                                    }
-                                    span { "{human_size(file.bytes.len() as u64)}" }
-                                }
-                                CompressionPicker {
-                                    file_id: file.id,
-                                    file_path: file.path.clone(),
-                                    value: file.compression,
-                                    draft_files,
-                                    open_menu: open_select_menu,
-                                }
+                    div { class: "file-browser-bar",
+                        button {
+                            class: "browser-back-button",
+                            r#type: "button",
+                            disabled: draft_current_dir.is_empty(),
+                            aria_label: parent_folder,
+                            title: parent_label,
+                            onclick: {
+                                let parent = draft_parent_dir.clone();
+                                move |_| draft_browse_path.set(parent.clone())
+                            },
+                            Icon { name: IconName::ArrowLeft, size: 16 }
+                        }
+                        nav { class: "archive-breadcrumbs", aria_label: archive_path_label,
+                            button {
+                                class: if draft_current_dir.is_empty() { "archive-crumb active" } else { "archive-crumb" },
+                                r#type: "button",
+                                onclick: move |_| draft_browse_path.set(String::new()),
+                                Icon { name: IconName::Home, size: 14 }
+                                span { "{root_label}" }
+                            }
+                            for (index, crumb) in draft_breadcrumbs.iter().enumerate() {
+                                span { class: "crumb-separator", Icon { name: IconName::ChevronRight, size: 13 } }
                                 button {
-                                    class: "row-action danger",
-                                    aria_label: i18n.t_args("remove-file-label", &[("path", file.path.clone())]),
+                                    class: if index + 1 == draft_breadcrumbs.len() { "archive-crumb active" } else { "archive-crumb" },
+                                    r#type: "button",
                                     onclick: {
-                                        let id = file.id;
-                                        move |_| draft_files.write().retain(|item| item.id != id)
+                                        let target = crumb.path.clone();
+                                        move |_| draft_browse_path.set(target.clone())
                                     },
-                                    Icon { name: IconName::X, size: 16 }
+                                    "{crumb.name}"
                                 }
                             }
                         }
+                    }
+
+                    div {
+                        class: if matches!(open_select_menu(), Some(OpenSelectMenu::Compression(_))) { "file-table draft-browser-table menu-open" } else { "file-table draft-browser-table" },
+                        div { class: "file-row table-head draft-browser-row",
+                            div { class: "check-wrap" }
+                            span { "{name_label}" }
+                            span { "{original_size}" }
+                            span { "{algorithm_label}" }
+                            div {}
+                        }
+                        if draft_folders.is_empty() && visible_draft_files.is_empty() {
+                            div { class: "no-results",
+                                Icon { name: IconName::FolderOpen, size: 32 }
+                                strong { "{empty_folder}" }
+                                span { "{empty_folder_hint}" }
+                            }
+                        }
+                        for folder in draft_folders.iter() {
+                            DraftFolderRow {
+                                key: "{folder.path}",
+                                folder: folder.clone(),
+                                browse_path: draft_browse_path,
+                            }
+                        }
+                        for file in visible_draft_files.iter() {
+                            DraftFileRow {
+                                key: "{file.id}",
+                                file: file.clone(),
+                                draft_files,
+                                open_menu: open_select_menu,
+                            }
+                        }
+                    }
+                    div { class: "table-footer",
+                        span { "{draft_directory_summary}" }
+                        span { class: "desktop-hint", Icon { name: IconName::MousePointer, size: 14 } "{browse_hint}" }
                     }
                 }
             }
@@ -1994,6 +2171,7 @@ fn UploadButton(
     next_id: Signal<u64>,
     default_compression: CompressionChoice,
     directory: bool,
+    destination: String,
 ) -> Element {
     let locale = use_context::<Signal<Locale>>();
     let i18n = I18n::new(locale());
@@ -2013,6 +2191,7 @@ fn UploadButton(
                 directory: directory,
                 onchange: move |event| {
                     let files = event.files();
+                    let destination = destination.clone();
                     async move {
                         add_uploaded_files(
                             files,
@@ -2020,6 +2199,7 @@ fn UploadButton(
                             next_id,
                             default_compression,
                             directory,
+                            &destination,
                         )
                         .await;
                     }
@@ -2035,13 +2215,14 @@ async fn add_uploaded_files(
     mut next_id: Signal<u64>,
     default_compression: CompressionChoice,
     preserve_tree: bool,
+    destination: &str,
 ) {
     let common_root = preserve_tree.then(|| common_upload_root(&files)).flatten();
     for file in files {
         if let Ok(bytes) = file.read_bytes().await {
             let id = next_id();
             next_id.set(id.saturating_add(1));
-            let path = upload_path(&file, common_root.as_deref());
+            let path = join_archive_path(destination, &upload_path(&file, common_root.as_deref()));
             draft_files.write().push(DraftFile {
                 id,
                 path,
@@ -2119,7 +2300,7 @@ async fn extract_and_export(
         &[("count", entry_ids.len().to_string())],
     );
     busy.set(Some(progress));
-    let result = match read_entries(&archive, &entry_ids) {
+    let result = match read_entries(&archive, &entry_ids).await {
         Ok(files) => platform::export_files(&archive.name, files).await,
         Err(message) => Err(message),
     };
@@ -2176,6 +2357,7 @@ fn StatCard(
 #[component]
 fn FolderRow(
     folder: FolderView,
+    selected: Signal<HashSet<usize>>,
     mut browse_path: Signal<String>,
     mut focused_entry: Signal<Option<usize>>,
 ) -> Element {
@@ -2191,17 +2373,46 @@ fn FolderRow(
     let packed_label = i18n.t("packed");
     let type_label = i18n.t("type");
     let folder_label = i18n.t("folder");
+    let select_label = i18n.t_args("select-folder", &[("name", folder.name.clone())]);
+    let entry_ids = folder.entry_ids.clone();
+    let selected_in_folder = entry_ids
+        .iter()
+        .filter(|id| selected.read().contains(id))
+        .count();
+    let all_selected = !entry_ids.is_empty() && selected_in_folder == entry_ids.len();
+    let partially_selected = selected_in_folder > 0 && !all_selected;
     rsx! {
-        button {
+        div {
             class: "file-row folder-row",
-            r#type: "button",
-            aria_label: open_label,
-            onclick: move |_| {
-                browse_path.set(target.clone());
-                focused_entry.set(None);
-            },
-            span { class: "check-wrap folder-disclosure", Icon { name: IconName::ChevronRight, size: 15 } }
+            button {
+                class: "folder-open-target",
+                r#type: "button",
+                aria_label: open_label,
+                onclick: move |_| {
+                    browse_path.set(target.clone());
+                    focused_entry.set(None);
+                },
+            }
+            label {
+                class: if partially_selected { "check-wrap folder-check partial" } else { "check-wrap folder-check" },
+                onclick: move |event| event.stop_propagation(),
+                input {
+                    r#type: "checkbox",
+                    checked: all_selected,
+                    aria_label: select_label,
+                    aria_checked: if partially_selected { "mixed" } else if all_selected { "true" } else { "false" },
+                    onchange: move |_| {
+                        let mut selected_set = selected.write();
+                        if all_selected {
+                            for id in &entry_ids { selected_set.remove(id); }
+                        } else {
+                            selected_set.extend(entry_ids.iter().copied());
+                        }
+                    }
+                }
+            }
             div { class: "file-cell name-cell",
+                span { class: "folder-disclosure", Icon { name: IconName::ChevronRight, size: 15 } }
                 div { class: "file-type-icon folder", Icon { name: IconName::Folder, size: 19 } }
                 div {
                     strong { "{folder.name}" }
@@ -2211,6 +2422,109 @@ fn FolderRow(
             span { class: "file-cell size-cell", "data-label": original_label, "{human_size(folder.size)}" }
             span { class: "file-cell size-cell", "data-label": packed_label, "{human_size(folder.packed_size)}" }
             span { class: "file-cell method-cell", "data-label": type_label, span { class: "folder-chip", "{folder_label}" } }
+        }
+    }
+}
+
+#[component]
+fn DraftFolderRow(folder: FolderView, mut browse_path: Signal<String>) -> Element {
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
+    let target = folder.path.clone();
+    let open_label = i18n.t_args("open-folder", &[("name", folder.name.clone())]);
+    let file_count = i18n.t_args(
+        "folder-file-count",
+        &[("count", folder.file_count.to_string())],
+    );
+    let original_label = i18n.t("original");
+    let type_label = i18n.t("type");
+    let folder_label = i18n.t("folder");
+    rsx! {
+        button {
+            class: "file-row folder-row draft-browser-row",
+            r#type: "button",
+            aria_label: open_label,
+            onclick: move |_| browse_path.set(target.clone()),
+            div { class: "check-wrap folder-disclosure", Icon { name: IconName::ChevronRight, size: 15 } }
+            div { class: "file-cell name-cell",
+                div { class: "file-type-icon folder", Icon { name: IconName::Folder, size: 19 } }
+                div {
+                    strong { "{folder.name}" }
+                    span { "{file_count}" }
+                }
+            }
+            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(folder.size)}" }
+            span { class: "file-cell method-cell", "data-label": type_label, span { class: "folder-chip", "{folder_label}" } }
+            div { class: "draft-row-action-spacer" }
+        }
+    }
+}
+
+#[component]
+fn DraftFileRow(
+    file: DraftFile,
+    mut draft_files: Signal<Vec<DraftFile>>,
+    open_menu: Signal<Option<OpenSelectMenu>>,
+) -> Element {
+    let locale = use_context::<Signal<Locale>>();
+    let i18n = I18n::new(locale());
+    let file_name = draft_file_name(&file.path).to_string();
+    let full_path = file.path.clone();
+    let location = file
+        .path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_else(|| i18n.t("root"));
+    let original_label = i18n.t("original");
+    let algorithm_label = i18n.t("algorithm");
+    let edit_label = i18n.t_args("rename-archive-entry-label", &[("path", file.path.clone())]);
+    let edit_title = i18n.t("rename-archive-entry");
+    let remove_label = i18n.t_args("remove-file-label", &[("path", file.path.clone())]);
+
+    rsx! {
+        div {
+            class: if open_menu() == Some(OpenSelectMenu::Compression(file.id)) { "file-row draft-browser-row draft-browser-file dropdown-open" } else { "file-row draft-browser-row draft-browser-file" },
+            div { class: "check-wrap" }
+            div { class: "file-cell name-cell",
+                div { class: "file-type-icon", Icon { name: icon_for_file(&file.path), size: 19 } }
+                div { class: "draft-name",
+                    input {
+                        class: "draft-path-input",
+                        value: "{file_name}",
+                        aria_label: edit_label,
+                        title: edit_title,
+                        oninput: {
+                            let id = file.id;
+                            let original_path = file.path.clone();
+                            move |event| {
+                                if let Some(item) = draft_files.write().iter_mut().find(|item| item.id == id) {
+                                    item.path = replace_draft_file_name(&original_path, &event.value());
+                                }
+                            }
+                        },
+                    }
+                    span { title: "{full_path}", "{location}" }
+                }
+            }
+            span { class: "file-cell size-cell", "data-label": original_label, "{human_size(file.bytes.len() as u64)}" }
+            div { class: "file-cell method-cell", "data-label": algorithm_label,
+                CompressionPicker {
+                    file_id: file.id,
+                    file_path: file.path.clone(),
+                    value: file.compression,
+                    draft_files,
+                    open_menu,
+                }
+            }
+            button {
+                class: "row-action danger draft-row-action",
+                aria_label: remove_label,
+                onclick: {
+                    let id = file.id;
+                    move |_| draft_files.write().retain(|item| item.id != id)
+                },
+                Icon { name: IconName::X, size: 16 }
+            }
         }
     }
 }
@@ -2602,6 +2916,15 @@ mod browser_tests {
         }
     }
 
+    fn draft(id: u64, path: &str, size: usize) -> DraftFile {
+        DraftFile {
+            id,
+            path: path.to_string(),
+            bytes: Arc::from(vec![0u8; size]),
+            compression: CompressionChoice::Dz,
+        }
+    }
+
     #[test]
     fn browser_listing_builds_virtual_folders_and_searches_globally() {
         let entries = vec![
@@ -2630,5 +2953,53 @@ mod browser_tests {
         let (search_folders, search_files) = build_browser_listing(&entries, "Data", "theme");
         assert!(search_folders.is_empty());
         assert_eq!(search_files[0].path, "Sounds/theme.ogg");
+
+        assert_eq!(entry_ids_in_directory(&entries, ""), vec![0, 1, 2, 3]);
+        assert_eq!(entry_ids_in_directory(&entries, "Data"), vec![1, 2]);
+        assert_eq!(entry_ids_in_directory(&entries, "Data/Images"), vec![2]);
+        assert!(entry_ids_in_directory(&entries, "Missing").is_empty());
+    }
+
+    #[test]
+    fn draft_browser_listing_navigates_and_preserves_archive_paths() {
+        let files = vec![
+            draft(1, "readme.txt", 20),
+            draft(2, "Data/config.json", 40),
+            draft(3, "Data/Images/logo.png", 60),
+            draft(4, "Sounds/theme.ogg", 80),
+        ];
+
+        let (root_folders, root_files) = build_draft_browser_listing(&files, "");
+        assert_eq!(
+            root_folders
+                .iter()
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Data", "Sounds"]
+        );
+        assert_eq!(root_folders[0].file_count, 2);
+        assert_eq!(root_folders[0].size, 100);
+        assert_eq!(root_files[0].path, "readme.txt");
+
+        let (data_folders, data_files) = build_draft_browser_listing(&files, "Data");
+        assert_eq!(data_folders[0].path, "Data/Images");
+        assert_eq!(data_files[0].path, "Data/config.json");
+
+        assert_eq!(
+            browser_breadcrumbs("Data/Images")
+                .iter()
+                .map(|crumb| crumb.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Data", "Data/Images"]
+        );
+        assert_eq!(parent_browser_directory("Data/Images"), "Data");
+        assert_eq!(
+            replace_draft_file_name("Data/config.json", "settings.json"),
+            "Data/settings.json"
+        );
+        assert_eq!(
+            join_archive_path("Data/Images", "icons/logo.png"),
+            "Data/Images/icons/logo.png"
+        );
     }
 }
