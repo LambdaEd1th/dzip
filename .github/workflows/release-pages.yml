@@ -207,6 +207,12 @@ jobs:
             cargo +stable install dioxus-cli --version "${DX_VERSION}" --locked
           fi
 
+      - name: Install wasm-pack
+        run: cargo +stable install wasm-pack --version 0.15.0 --locked
+
+      - name: Build web worker
+        run: ./scripts/build-web-worker.sh
+
       - name: Build WASM site
         run: |
           REPO_NAME="${GITHUB_REPOSITORY#*/}"

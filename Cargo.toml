@@ -3,6 +3,7 @@ members = [
     "crates/dzip",
     "crates/dzip-cli",
     "crates/dzip-gui",
+    "crates/dzip-worker",
     "crates/codecs/bzip",
     "crates/codecs/dz",
     "crates/codecs/lzma",
@@ -25,6 +26,7 @@ dz = { path = "crates/codecs/dz", default-features = false }
 log = "0.4"
 lzma = { path = "crates/codecs/lzma" }
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 zlib = { path = "crates/codecs/zlib" }
 
 [profile.release]

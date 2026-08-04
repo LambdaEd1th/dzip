@@ -313,17 +313,26 @@ fn write_prepared<S: VolumeSink>(
         Some(crate::codec::dz::encode_archive(&dz_inputs, &options.dz)?)
     };
     let mut next_dz = 0usize;
-    let mut processed = Vec::with_capacity(prepared.len());
-    for (index, entry) in prepared.iter().enumerate() {
+    let dz_indices = compressions
+        .iter()
+        .map(|compression| {
+            if *compression == Compression::Dz {
+                let index = next_dz;
+                next_dz += 1;
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let process_entry = |(index, entry): (usize, &PreparedEntry)| -> Result<ProcessedEntry> {
         let compression = compressions[index];
         let compressed = if compression == Compression::Dz {
-            let bytes = encoded_dz
+            encoded_dz
                 .as_ref()
-                .and_then(|archive| archive.chunks.get(next_dz))
+                .and_then(|archive| archive.chunks.get(dz_indices[index]?))
                 .ok_or_else(|| invalid_input("missing archive-scoped DZ result"))?
-                .clone();
-            next_dz += 1;
-            bytes
+                .clone()
         } else {
             crate::codec::encode(compression, &entry.data, options.dz.settings)?
         };
@@ -340,14 +349,29 @@ fn write_prepared<S: VolumeSink>(
             };
             flags
         });
-        processed.push(ProcessedEntry {
+        Ok(ProcessedEntry {
             logical_index: segment_to_logical[index],
             volume: entry.options.volume,
             compressed,
             original_len: entry.data.len(),
             flags,
-        });
-    }
+        })
+    };
+    #[cfg(feature = "parallel")]
+    let processed = {
+        use rayon::prelude::*;
+        prepared
+            .par_iter()
+            .enumerate()
+            .map(process_entry)
+            .collect::<Result<Vec<_>>>()?
+    };
+    #[cfg(not(feature = "parallel"))]
+    let processed = prepared
+        .iter()
+        .enumerate()
+        .map(process_entry)
+        .collect::<Result<Vec<_>>>()?;
 
     let has_dz = !dz_inputs.is_empty();
     let common_buffer = encoded_dz.and_then(|archive| archive.common_buffer);

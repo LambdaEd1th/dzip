@@ -1,0 +1,17 @@
+[package]
+name = "dzip-gui-worker"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Web Worker runtime for Dzip Archive"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+console_error_panic_hook = "0.1"
+dzip-gui = { path = "../dzip-gui", default-features = false }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"

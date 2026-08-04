@@ -1,0 +1,21 @@
+{
+  "name": "dzip-gui-worker",
+  "type": "module",
+  "description": "Web Worker runtime for Dzip Archive",
+  "version": "0.4.1",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LambdaEd1th/dzip-rs"
+  },
+  "files": [
+    "dzip_gui_worker_bg.wasm",
+    "dzip_gui_worker.js",
+    "dzip_gui_worker.d.ts"
+  ],
+  "main": "dzip_gui_worker.js",
+  "types": "dzip_gui_worker.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
