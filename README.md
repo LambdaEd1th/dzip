@@ -20,11 +20,11 @@ decoding, while Dzip-specific framing stays in the `dzip` façade.
 
 ## Library
 
-Add the public crate to a Rust project:
+Add the public crate directly from GitHub (it is not published on crates.io):
 
 ```toml
 [dependencies]
-dzip = "0.4"
+dzip = { git = "https://github.com/LambdaEd1th/dzip-rs.git", tag = "v0.4.2" }
 ```
 
 Open, inspect, and extract an archive:
