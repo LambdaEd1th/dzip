@@ -50,7 +50,7 @@ pub async fn build_archive(
     alignment: u32,
     random_access: bool,
     dz_options: DzCompressionOptions,
-) -> Result<(Vec<u8>, LoadedArchive), String> {
+) -> Result<(Vec<(String, Vec<u8>)>, LoadedArchive), String> {
     let response = run_archive_task(ArchiveTask::Build {
         files: files.iter().map(DraftFilePayload::from).collect(),
         archive_name: archive_name.to_string(),
@@ -60,7 +60,13 @@ pub async fn build_archive(
     })
     .await?;
     match response {
-        ArchiveTaskResponse::Built { bytes, archive } => Ok((bytes, LoadedArchive::from(archive))),
+        ArchiveTaskResponse::Built { volumes, archive } => Ok((
+            volumes
+                .into_iter()
+                .map(|volume| (volume.name, volume.bytes))
+                .collect(),
+            LoadedArchive::from(archive),
+        )),
         _ => Err("后台任务返回了错误的压缩响应".to_string()),
     }
 }

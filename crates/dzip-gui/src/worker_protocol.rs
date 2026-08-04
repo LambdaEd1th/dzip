@@ -1,4 +1,4 @@
-use crate::archive_ops::{build_archive, make_store_zip, open_archive, read_entries};
+use crate::archive_ops::{build_archive_volumes, make_store_zip, open_archive, read_entries};
 use crate::model::{CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -31,6 +31,7 @@ pub struct DraftFilePayload {
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     pub compression: CompressionChoice,
+    pub volume: u16,
 }
 
 impl From<&DraftFile> for DraftFilePayload {
@@ -40,6 +41,7 @@ impl From<&DraftFile> for DraftFilePayload {
             path: file.path.clone(),
             bytes: file.bytes.as_ref().to_vec(),
             compression: file.compression,
+            volume: file.volume,
         }
     }
 }
@@ -51,6 +53,7 @@ impl From<DraftFilePayload> for DraftFile {
             path: file.path,
             bytes: Arc::from(file.bytes),
             compression: file.compression,
+            volume: file.volume,
         }
     }
 }
@@ -143,8 +146,7 @@ pub enum ArchiveTaskResponse {
     Archive(ArchivePayload),
     Files(Vec<FileBytes>),
     Built {
-        #[serde(with = "serde_bytes")]
-        bytes: Vec<u8>,
+        volumes: Vec<NamedBytes>,
         archive: ArchivePayload,
     },
     Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
@@ -184,10 +186,18 @@ pub fn execute_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, St
             dz_options,
         } => {
             let files: Vec<DraftFile> = files.into_iter().map(DraftFile::from).collect();
-            let bytes = build_archive(&files, &archive_name, alignment, random_access, dz_options)?;
-            let archive = open_archive(archive_name, bytes.clone(), Vec::new())?;
+            let volumes =
+                build_archive_volumes(&files, &archive_name, alignment, random_access, dz_options)?;
+            let Some((main_name, main_bytes)) = volumes.first().cloned() else {
+                return Err("创建归档没有生成主卷".to_string());
+            };
+            let auxiliary = volumes.iter().skip(1).cloned().collect();
+            let archive = open_archive(main_name, main_bytes, auxiliary)?;
             Ok(ArchiveTaskResponse::Built {
-                bytes,
+                volumes: volumes
+                    .into_iter()
+                    .map(|(name, bytes)| NamedBytes { name, bytes })
+                    .collect(),
                 archive: ArchivePayload::from(&archive),
             })
         }
@@ -213,17 +223,21 @@ mod tests {
                 path: "Data/worker.txt".to_string(),
                 bytes: b"worker payload".to_vec(),
                 compression: CompressionChoice::Zlib,
+                volume: 1,
             }],
             archive_name: "worker.dz".to_string(),
             alignment: 0,
             random_access: false,
             dz_options: DzCompressionOptions::default(),
         };
-        let ArchiveTaskResponse::Built { bytes, archive } = execute_archive_task(build).unwrap()
+        let ArchiveTaskResponse::Built { volumes, archive } = execute_archive_task(build).unwrap()
         else {
             panic!("unexpected worker response");
         };
-        assert!(!bytes.is_empty());
+        assert_eq!(volumes.len(), 2);
+        assert!(!volumes[0].bytes.is_empty());
+        assert_eq!(volumes[1].name, "worker.001");
+        assert_eq!(archive.entries[0].volume, 1);
 
         let ArchiveTaskResponse::Files(files) = execute_archive_task(ArchiveTask::ReadEntries {
             archive,

@@ -2,7 +2,7 @@
   "name": "dzip-gui-worker",
   "type": "module",
   "description": "Web Worker runtime for Dzip Archive",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",

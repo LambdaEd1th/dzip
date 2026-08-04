@@ -1,8 +1,8 @@
 use crate::model::{CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive};
 use crc32fast::Hasher;
 use dzip::{
-    Archive, ArchiveBuilder, Compression, DzOptions, EntryId, EntryOptions, MemoryVolumeSource,
-    PackOptions, RangeSettings,
+    Archive, ArchiveBuilder, Compression, DzOptions, EntryId, EntryOptions, MemoryVolumeSink,
+    MemoryVolumeSource, PackOptions, RangeSettings,
 };
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -17,7 +17,7 @@ pub fn open_archive(
 ) -> Result<LoadedArchive, String> {
     let main_bytes: Arc<[u8]> = Arc::from(main_bytes);
     let mut auxiliary_files = auxiliary_files;
-    auxiliary_files.sort_by_key(|item| item.0.to_lowercase());
+    auxiliary_files.sort_by(|left, right| compare_volume_names(&left.0, &right.0));
     let auxiliary: Vec<(u16, Vec<u8>)> = auxiliary_files
         .into_iter()
         .enumerate()
@@ -105,6 +105,17 @@ pub fn open_archive(
     })
 }
 
+fn compare_volume_names(left: &str, right: &str) -> std::cmp::Ordering {
+    let number = |name: &str| {
+        name.rsplit_once('.')
+            .and_then(|(_, suffix)| suffix.parse::<u32>().ok())
+    };
+    match (number(left), number(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        _ => left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()),
+    }
+}
+
 pub fn read_entries(
     archive: &LoadedArchive,
     entry_ids: &[usize],
@@ -136,6 +147,21 @@ pub fn build_archive(
     random_access: bool,
     dz_options: DzCompressionOptions,
 ) -> Result<Vec<u8>, String> {
+    let volumes = build_archive_volumes(files, archive_name, alignment, random_access, dz_options)?;
+    volumes
+        .into_iter()
+        .next()
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| "创建归档没有生成主卷".to_string())
+}
+
+pub fn build_archive_volumes(
+    files: &[DraftFile],
+    archive_name: &str,
+    alignment: u32,
+    random_access: bool,
+    dz_options: DzCompressionOptions,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
     if files.is_empty() {
         return Err("请先添加至少一个文件".to_string());
     }
@@ -155,8 +181,14 @@ pub fn build_archive(
     .validate()
     .map_err(|error| format!("DZ 参数无效：{error}"))?;
 
+    let volume_count = files
+        .iter()
+        .map(|file| usize::from(file.volume) + 1)
+        .max()
+        .unwrap_or(1);
+    let volume_names = archive_volume_names(archive_name, volume_count)?;
     let mut builder = ArchiveBuilder::with_options(PackOptions {
-        volume_names: vec![normalise_archive_name(archive_name)],
+        volume_names,
         alignment,
         dz: DzOptions {
             settings,
@@ -196,16 +228,49 @@ pub fn build_archive(
                 file.bytes.as_ref().to_vec(),
                 EntryOptions::new()
                     .compression(compression)
+                    .volume(file.volume)
                     .random_access(random_access),
             )
             .map_err(|error| format!("无法添加 {path}：{error}"))?;
     }
 
-    let mut cursor = Cursor::new(Vec::new());
-    builder
-        .write_to(&mut cursor)
+    let mut sink = MemoryVolumeSink::default();
+    let report = builder
+        .write_to_sink(&mut sink)
         .map_err(|error| format!("创建归档失败：{error}"))?;
-    Ok(cursor.into_inner())
+    let mut volumes = Vec::with_capacity(report.volumes);
+    for id in 0..report.volumes {
+        let id = u16::try_from(id).map_err(|_| "分卷数量超过 65535".to_string())?;
+        let name = sink
+            .name(id)
+            .ok_or_else(|| format!("分卷 #{id} 缺少文件名"))?
+            .to_string();
+        let bytes = sink
+            .volume(id)
+            .ok_or_else(|| format!("分卷 #{id} 缺少输出数据"))?
+            .to_vec();
+        volumes.push((name, bytes));
+    }
+    Ok(volumes)
+}
+
+fn archive_volume_names(archive_name: &str, count: usize) -> Result<Vec<String>, String> {
+    if count > u16::MAX as usize {
+        return Err("分卷数量超过 65535".to_string());
+    }
+    let main_name = normalise_archive_name(archive_name);
+    let lower = main_name.to_ascii_lowercase();
+    let stem = if lower.ends_with(".dzip") {
+        main_name[..main_name.len() - 5].to_string()
+    } else {
+        main_name[..main_name.len() - 3].to_string()
+    };
+    let mut names = Vec::with_capacity(count);
+    names.push(main_name);
+    for index in 1..count {
+        names.push(format!("{stem}.{index:03}"));
+    }
+    Ok(names)
 }
 
 pub fn normalise_archive_name(value: &str) -> String {
@@ -344,12 +409,14 @@ mod tests {
                 path: "Data/hello.txt".into(),
                 bytes: Arc::from(b"hello from the GUI".as_slice()),
                 compression: CompressionChoice::Zlib,
+                volume: 0,
             },
             DraftFile {
                 id: 2,
                 path: "Data/already-packed.bin".into(),
                 bytes: Arc::from(b"stored without compression".as_slice()),
                 compression: CompressionChoice::Copy,
+                volume: 0,
             },
         ];
         let bytes = build_archive(
@@ -378,12 +445,56 @@ mod tests {
     }
 
     #[test]
+    fn gui_builds_and_reopens_per_file_split_volumes() {
+        let draft = (0..3)
+            .map(|index| DraftFile {
+                id: index + 1,
+                path: format!("Data/file-{index}.bin"),
+                bytes: Arc::from(vec![index as u8; 180]),
+                compression: CompressionChoice::Copy,
+                volume: (index + 1) as u16,
+            })
+            .collect::<Vec<_>>();
+
+        let mut volumes = build_archive_volumes(
+            &draft,
+            "gui-split.dz",
+            0,
+            false,
+            DzCompressionOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(volumes.len(), 4);
+        assert_eq!(volumes[0].0, "gui-split.dz");
+        assert_eq!(volumes[1].0, "gui-split.001");
+        let (main_name, main_bytes) = volumes.remove(0);
+        let archive = open_archive(main_name, main_bytes, volumes).unwrap();
+        assert_eq!(archive.entries[0].volume, 1);
+        assert_eq!(archive.entries[1].volume, 2);
+        assert_eq!(archive.entries[2].volume, 3);
+        let extracted = read_entries(
+            &archive,
+            &archive
+                .entries
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for (index, (_, bytes)) in extracted.iter().enumerate() {
+            assert_eq!(bytes, &vec![index as u8; 180]);
+        }
+    }
+
+    #[test]
     fn gui_applies_and_recovers_dz_range_parameters() {
         let draft = vec![DraftFile {
             id: 1,
             path: "Data/repeated.bin".into(),
             bytes: Arc::from(b"native dz payload native dz payload".repeat(32)),
             compression: CompressionChoice::Dz,
+            volume: 0,
         }];
         let options = DzCompressionOptions {
             combuf_static_tables: false,
@@ -421,6 +532,7 @@ mod tests {
             path: "Data/payload.bin".into(),
             bytes: Arc::from(b"payload".repeat(64)),
             compression: CompressionChoice::Dz,
+            volume: 0,
         }];
         let options = DzCompressionOptions {
             max_mem_usage: 0,
@@ -438,6 +550,7 @@ mod tests {
             path: "Data/repeated.txt".into(),
             bytes: Arc::from(b"original compatibility payload\n".repeat(256)),
             compression: CompressionChoice::Zlib,
+            volume: 0,
         }];
 
         let bytes = build_archive(
@@ -462,6 +575,7 @@ mod tests {
             path: "Data/zero.bin".into(),
             bytes: Arc::from([1, 2, 3, 4]),
             compression: CompressionChoice::Zero,
+            volume: 0,
         }];
 
         let bytes =

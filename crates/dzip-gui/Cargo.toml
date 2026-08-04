@@ -37,6 +37,7 @@ rfd = { version = "0.17", optional = true, default-features = false, features = 
 serde.workspace = true
 serde-wasm-bindgen = { version = "0.6", optional = true }
 serde_bytes.workspace = true
+serde_json.workspace = true
 unic-langid = { version = "0.9", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }

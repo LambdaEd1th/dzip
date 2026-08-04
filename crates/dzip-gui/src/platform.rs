@@ -53,6 +53,70 @@ pub async fn save_bytes(file_name: &str, bytes: Vec<u8>) -> Result<String, Strin
 }
 
 #[cfg(feature = "desktop")]
+pub async fn save_archive_volumes(
+    file_name: &str,
+    mut volumes: Vec<(String, Vec<u8>)>,
+) -> Result<String, String> {
+    if volumes.len() == 1 {
+        let Some((_, bytes)) = volumes.pop() else {
+            return Err("归档没有生成可保存的数据".to_string());
+        };
+        return save_bytes(file_name, bytes).await;
+    }
+    let Some(folder) = rfd::AsyncFileDialog::new()
+        .set_title("选择分卷归档保存目录")
+        .pick_folder()
+        .await
+    else {
+        return Err("已取消保存".to_string());
+    };
+    let root = folder.path().to_path_buf();
+    crate::task::run_cpu_task(move || {
+        for (name, bytes) in &volumes {
+            let target = safe_join(&root, name)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("无法创建目录 {}：{error}", parent.display()))?;
+            }
+            std::fs::write(&target, bytes)
+                .map_err(|error| format!("无法写入 {}：{error}", target.display()))?;
+        }
+        Ok(format!(
+            "已保存 {} 个分卷到 {}",
+            volumes.len(),
+            root.display()
+        ))
+    })
+    .await?
+}
+
+#[cfg(feature = "web")]
+pub async fn save_archive_volumes(
+    file_name: &str,
+    mut volumes: Vec<(String, Vec<u8>)>,
+) -> Result<String, String> {
+    if volumes.len() == 1 {
+        let Some((_, bytes)) = volumes.pop() else {
+            return Err("归档没有生成可保存的数据".to_string());
+        };
+        return save_bytes(file_name, bytes).await;
+    }
+    let count = volumes.len();
+    let zip = crate::background::make_store_zip(volumes).await?;
+    let lower = file_name.to_ascii_lowercase();
+    let stem = if lower.ends_with(".dzip") {
+        &file_name[..file_name.len() - 5]
+    } else if lower.ends_with(".dz") {
+        &file_name[..file_name.len() - 3]
+    } else {
+        file_name
+    };
+    let zip_name = format!("{stem}-volumes.zip");
+    save_bytes(&zip_name, zip).await?;
+    Ok(format!("已将 {count} 个分卷打包为 {zip_name}"))
+}
+
+#[cfg(feature = "desktop")]
 pub async fn export_files(
     archive_name: &str,
     files: Vec<(String, Vec<u8>)>,
