@@ -6,5 +6,8 @@ repository.workspace = true
 license.workspace = true
 description = "Pure Rust implementation of the native Dzip range/LZ codec"
 
+[features]
+default = []
+
 [lib]
 path = "src/lib.rs"

@@ -59,13 +59,13 @@ pub use builder::{
     VolumeSink, WriteSeek,
 };
 pub use codec::{
-    ChunkEncoding, Codec, CodecError, Compression, ContentHint, DzOptions, ParseCompressionError,
+    ChunkEncoding, Codec, CodecError, CodecLimits, Compression, ContentHint, DzOptions,
+    ParseCompressionError,
 };
 pub use error::{DzipError, Result};
 #[cfg(feature = "decode")]
 pub use extract::{ExtractOptions, ExtractionReport};
 pub use format::{ArchiveSettings, Chunk, ChunkSettings, RangeSettings};
-pub use options::Compatibility;
 #[cfg(feature = "decode")]
 pub use reader::{ReadSeek, VolumeSource};
 #[cfg(feature = "decode")]

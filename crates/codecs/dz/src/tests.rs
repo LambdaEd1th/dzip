@@ -1,4 +1,18 @@
 use super::*;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+
+fn deterministic_bytes(length: usize, mut state: u32) -> Vec<u8> {
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect()
+}
 
 #[test]
 fn dz_round_trip_literals_and_matches() {
@@ -24,6 +38,112 @@ fn dz_round_trip_small_inputs() {
         let decompressed = decompress_chunk(&compressed, data.len(), settings).unwrap();
         assert_eq!(decompressed, data);
     }
+}
+
+#[test]
+fn large_deterministic_round_trip_matrix() {
+    const SIZES: [usize; 35] = [
+        0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256, 257, 258, 259, 511,
+        512, 1023, 4095, 8191, 16_383, 16_384, 16_385, 32_767, 32_768, 32_769, 65_535, 65_536,
+        65_537,
+    ];
+    let settings = RangeSettings::default();
+    let mut cases = 0usize;
+    for &size in &SIZES {
+        let inputs = [
+            vec![0; size],
+            (0..size).map(|index| index as u8).collect(),
+            (0..size)
+                .map(|index| b"dz-boundary-pattern"[index % 19])
+                .collect(),
+            deterministic_bytes(size, 0x1656_67b1 ^ size as u32),
+        ];
+        for input in inputs {
+            let encoded = compress_chunk(&input, settings).unwrap();
+            assert_eq!(
+                decompress_chunk(&encoded, input.len(), settings).unwrap(),
+                input
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 140);
+}
+
+#[test]
+fn range_settings_matrix_round_trips() {
+    let input = deterministic_bytes(8193, 0xd3a2_646c);
+    let settings = [
+        RangeSettings::default(),
+        RangeSettings {
+            win_size: 0,
+            flags: 0,
+            offset_table_size: 1,
+            offset_tables: 1,
+            offset_contexts: 1,
+            ref_length_table_size: 0,
+            ref_length_tables: 0,
+            ref_offset_table_size: 0,
+            ref_offset_tables: 0,
+            big_min_match: 2,
+        },
+        RangeSettings {
+            win_size: 12,
+            offset_table_size: 5,
+            offset_tables: 2,
+            offset_contexts: 8,
+            big_min_match: 3,
+            ..RangeSettings::default()
+        },
+        RangeSettings {
+            win_size: 20,
+            flags: 0,
+            offset_table_size: 10,
+            offset_tables: 4,
+            offset_contexts: 4,
+            big_min_match: 32,
+            ..RangeSettings::default()
+        },
+    ];
+    for settings in settings {
+        let encoded = compress_chunk(&input, settings).unwrap();
+        assert_eq!(
+            decompress_chunk(&encoded, input.len(), settings).unwrap(),
+            input,
+            "{settings:?}"
+        );
+    }
+}
+
+#[test]
+fn truncations_and_bit_flips_are_bounded() {
+    let input = deterministic_bytes(513, 0x1234_5678);
+    let settings = RangeSettings::default();
+    let encoded = compress_chunk(&input, settings).unwrap();
+
+    let mut affected_truncations = 0usize;
+    for end in 0..encoded.len() {
+        match decompress_chunk(&encoded[..end], input.len(), settings) {
+            Err(_) => affected_truncations += 1,
+            Ok(decoded) if decoded != input => affected_truncations += 1,
+            Ok(_) => {}
+        }
+    }
+    assert!(affected_truncations > encoded.len() / 2);
+
+    let mut affected_flips = 0usize;
+    for index in 0..encoded.len() {
+        for bit in 0..8 {
+            let mut damaged = encoded.clone();
+            damaged[index] ^= 1 << bit;
+            match decompress_chunk(&damaged, input.len(), settings) {
+                Err(_) => affected_flips += 1,
+                Ok(decoded) if decoded != input => affected_flips += 1,
+                Ok(_) => {}
+            }
+        }
+    }
+    assert!(affected_flips > encoded.len() * 4);
 }
 
 #[test]
@@ -125,6 +245,54 @@ fn dz_archive_round_trip_with_common_buffer() {
         .unwrap();
         assert_eq!(&decoded, input);
     }
+}
+
+#[test]
+fn common_buffer_configuration_matrix_round_trips() {
+    let configurations = [
+        (false, 0, 32usize),
+        (false, 20, 258),
+        (true, 0, 64),
+        (true, 20, usize::MAX),
+    ];
+    let mut cases = 0usize;
+    for size in [32usize, 257, 1024, 4096] {
+        let shared = deterministic_bytes(size, 0x9e37_79b9 ^ size as u32);
+        let mut prefixed = vec![0x13, 0x37];
+        prefixed.extend_from_slice(&shared);
+        let mut patched = shared.clone();
+        for index in (0..patched.len()).step_by(97) {
+            patched[index] ^= 0xa5;
+        }
+        let inputs = vec![shared, prefixed, patched];
+
+        for (preprocess, trim_reference_factor, max_common_match) in configurations {
+            let options = DzEncoderOptions {
+                use_combuf: true,
+                preprocess,
+                trim_reference_factor,
+                max_common_match,
+                ..DzEncoderOptions::default()
+            };
+            let encoded = compress_archive(&inputs, &options).unwrap();
+            let common_bytes = encoded.common_buffer.as_ref().unwrap();
+            let common = DzCommonBuffer::new(options.settings, vec![common_bytes.clone()]).unwrap();
+            for (input, compressed) in inputs.iter().zip(&encoded.chunks) {
+                assert_eq!(
+                    decompress_chunk_with_common_buffer(
+                        compressed,
+                        input.len(),
+                        options.settings,
+                        Some(&common),
+                    )
+                    .unwrap(),
+                    *input
+                );
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, 48);
 }
 
 #[test]

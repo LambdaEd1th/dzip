@@ -3,7 +3,10 @@ use crate::matchfinder::{LazyLzParser, LzDecision, MatchCost, MatchScoring, loca
 use crate::model::{CommonFrequencies, CommonModels, DzFixedCosts};
 use crate::range::RangeEncoder;
 use crate::{DzipError, END_SYMBOL, MIN_MATCH, RangeSettings, Result};
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 #[derive(Clone, Debug)]
 pub struct DzCommonBuffer {
@@ -202,7 +205,7 @@ pub(crate) fn compress_common_segment(
     input: &[u8],
     boundary: usize,
     allow_position_zero: bool,
-    stale_keys: &mut HashSet<u32>,
+    stale_keys: &mut BTreeSet<u32>,
     emit_end: bool,
     trailing_literal: Option<u8>,
     settings: RangeSettings,

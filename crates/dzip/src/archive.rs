@@ -1,6 +1,6 @@
 //! High-level archive reading, indexing, and safe extraction.
 
-use crate::codec::{ChunkEncoding, Compression, DzDecodeContext};
+use crate::codec::{ChunkEncoding, CodecLimits, Compression, DzDecodeContext};
 use crate::format::{ArchiveSettings, CHUNK_COMBUF, CHUNK_DZ, Chunk, RangeSettings};
 use crate::path::{resolve_relative_path, to_archive_format};
 use crate::reader::{DzipReader, VolumeSource, correct_chunk_sizes};
@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-pub use crate::options::{Compatibility, ReadLimits, ReadOptions};
+pub use crate::options::{ReadLimits, ReadOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(pub usize);
@@ -99,6 +99,7 @@ pub struct Archive<R: Read + Seek, V: VolumeSource> {
     volumes: V,
     index: ArchiveIndex,
     dz_context: Option<DzDecodeContext>,
+    codec_limits: CodecLimits,
 }
 
 struct ParsedMetadata {
@@ -175,10 +176,11 @@ impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
                 .chunks
                 .get(chunk_id as usize)
                 .ok_or_else(|| invalid_archive(format!("invalid chunk index {chunk_id}")))?;
-            let bytes = self.reader.read_chunk_data_with_context(
+            let bytes = self.reader.read_chunk_data_with_context_and_limits(
                 &chunk,
                 &mut self.volumes,
                 self.dz_context.as_ref(),
+                self.codec_limits,
             )?;
             output.write_all(&bytes)?;
             written = written
@@ -277,10 +279,8 @@ fn finish_open<R: Read + Seek, V: VolumeSource>(
         }
     }
 
-    match options.compatibility {
-        Compatibility::Original => correct_chunk_sizes(&mut parsed.chunks, &sizes),
-        Compatibility::Strict => validate_chunk_bounds(&parsed.chunks, &sizes)?,
-    }
+    correct_chunk_sizes(&mut parsed.chunks, &sizes);
+    validate_chunk_limits(&parsed.chunks, &options.limits)?;
 
     let index = build_index(&parsed, options)?;
     let dz_context = if let Some(settings) = parsed.range_settings {
@@ -294,7 +294,28 @@ fn finish_open<R: Read + Seek, V: VolumeSource>(
         volumes,
         index,
         dz_context,
+        codec_limits: CodecLimits {
+            max_input_size: options.limits.max_chunk_input_size,
+            max_output_size: options.limits.max_chunk_output_size,
+            max_workspace_size: options.limits.max_codec_workspace,
+        },
     })
+}
+
+fn validate_chunk_limits(chunks: &[Chunk], limits: &ReadLimits) -> Result<()> {
+    for chunk in chunks {
+        check_limit(
+            "compressed chunk size",
+            limits.max_chunk_input_size as u64,
+            chunk.compressed_length as u64,
+        )?;
+        check_limit(
+            "decompressed chunk size",
+            limits.max_chunk_output_size as u64,
+            chunk.decompressed_length as u64,
+        )?;
+    }
+    Ok(())
 }
 
 fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<ArchiveIndex> {
@@ -343,12 +364,6 @@ fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<Archive
                 return Err(DzipError::VolumeNotFound(chunk.file));
             }
             let encoding = ChunkEncoding::from_flags(chunk.flags)?;
-            if options.compatibility == Compatibility::Strict && encoding.unknown_flags != 0 {
-                return Err(invalid_archive(format!(
-                    "chunk {chunk_id} uses unknown flags {:#x}",
-                    encoding.unknown_flags
-                )));
-            }
             if part == 0 {
                 compression = encoding.compression;
                 volume = chunk.file;
@@ -388,27 +403,6 @@ fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<Archive
         volume_files: parsed.volume_files.clone(),
         range_settings: parsed.range_settings,
     })
-}
-
-fn validate_chunk_bounds(chunks: &[Chunk], sizes: &HashMap<u16, u64>) -> Result<()> {
-    for (index, chunk) in chunks.iter().enumerate() {
-        if chunk.flags & crate::format::CHUNK_ZERO != 0 {
-            continue;
-        }
-        let volume_size = sizes
-            .get(&chunk.file)
-            .ok_or(DzipError::VolumeNotFound(chunk.file))?;
-        let end = u64::from(chunk.offset)
-            .checked_add(u64::from(chunk.compressed_length))
-            .ok_or_else(|| invalid_archive(format!("chunk {index} range overflow")))?;
-        if end > *volume_size {
-            return Err(invalid_archive(format!(
-                "chunk {index} ends at {end}, beyond volume {} size {volume_size}",
-                chunk.file
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn check_limit(resource: &'static str, limit: u64, actual: u64) -> Result<()> {

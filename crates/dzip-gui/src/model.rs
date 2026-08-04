@@ -25,7 +25,6 @@ pub struct LoadedArchive {
     pub main_bytes: Arc<[u8]>,
     pub auxiliary: Arc<Vec<(u16, Vec<u8>)>>,
     pub entries: Arc<Vec<EntryView>>,
-    pub compatibility: dzip::Compatibility,
     pub dz_options: DzCompressionOptions,
     pub source_size: u64,
     pub unpacked_size: u64,

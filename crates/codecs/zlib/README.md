@@ -1,6 +1,14 @@
-# ⚠️ UNSTABLE⚠️
-_the public interface of this crate is unstable!_
+# zlib
 
-A pure-rust implementation of [zlib](https://www.zlib.net/manual.html).
+A dependency-free, safe Rust implementation of RFC 1950 zlib and RFC 1951
+DEFLATE streams. The decoder supports stored, fixed-Huffman, and
+dynamic-Huffman blocks; the encoder performs LZ77 matching and emits
+fixed-Huffman blocks.
 
-For a [zlib](https://www.zlib.net/manual.html) -compatible rust api of this crate, see [`libz-rs-sys`](https://crates.io/crates/libz-rs-sys). For a more high-level interface, use [`flate2`](https://crates.io/crates/flate2).
+The format baseline is zlib 1.3.2. Encoded bytes are deterministic but are not
+expected to match zlib's encoder byte for byte.
+
+`StreamFormat` selects raw DEFLATE or RFC 1950 framing. The public façade
+provides `EncoderOptions`, `DecoderOptions`, reusable `Encoder` / `Decoder`
+values, typed `ErrorKind` failures, and explicit resource limits. The crate is
+always `no_std + alloc`.

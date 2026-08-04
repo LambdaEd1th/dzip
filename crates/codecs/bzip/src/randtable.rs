@@ -1,3 +1,5 @@
+// Fixed compatibility data for the obsolete randomized-block mode. Modern
+// encoders do not use it. See ../LICENSE for the retained bzip2 notice.
 pub(crate) static BZ2_RNUMS: [u16; 512] = NUMS;
 
 const NUMS: [u16; 512] = [
