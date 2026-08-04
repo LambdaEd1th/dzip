@@ -20,8 +20,31 @@ env:
   WEB_DIST: target/dx/dzip-gui/release/web/public
 
 jobs:
+  validate_version:
+    name: Validate Release Version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Match Git tag to Cargo version
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "dzip") | .version')
+          TAG_VERSION=${GITHUB_REF_NAME#v}
+          if [[ -z "$PACKAGE_VERSION" || "$TAG_VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match Cargo version ${PACKAGE_VERSION}." >&2
+            exit 1
+          fi
+
   build_native:
     name: Build CLI + GUI (${{ matrix.artifact }})
+    needs: validate_version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -157,6 +180,7 @@ jobs:
 
   build_wasm:
     name: Build WASM
+    needs: validate_version
     runs-on: ubuntu-latest
 
     steps:
