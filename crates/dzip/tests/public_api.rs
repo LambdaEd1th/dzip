@@ -3,8 +3,8 @@ use dzip::raw::{
 };
 use dzip::volume::MemoryVolumeSource;
 use dzip::{
-    Archive, ArchiveBuilder, Codec, Compatibility, Compression, EntryOptions, ExtractOptions,
-    MemoryVolumeSink, PackOptions,
+    Archive, ArchiveBuilder, Codec, Compression, EntryOptions, ExtractOptions, MemoryVolumeSink,
+    PackOptions,
 };
 use std::io::Cursor;
 
@@ -197,7 +197,7 @@ fn alignment_applies_once_per_volume_and_zero_uses_the_payload_origin() {
 }
 
 #[test]
-fn extraction_is_safe_and_strict_zero_mode_rejects_data_loss() {
+fn extraction_is_safe_and_zero_uses_original_behavior() {
     let mut unsafe_builder = ArchiveBuilder::new();
     assert!(
         unsafe_builder
@@ -205,21 +205,22 @@ fn extraction_is_safe_and_strict_zero_mode_rejects_data_loss() {
             .is_err()
     );
 
-    let mut strict_builder = ArchiveBuilder::with_options(PackOptions {
-        compatibility: Compatibility::Strict,
-        ..PackOptions::default()
-    });
-    strict_builder
+    let mut zero_builder = ArchiveBuilder::new();
+    zero_builder
         .add_bytes(
             "not-zero.bin",
             b"x".to_vec(),
             EntryOptions::new().compression(Compression::Zero),
         )
         .unwrap();
-    assert!(
-        strict_builder
-            .write_to_sink(&mut MemoryVolumeSink::default())
-            .is_err()
+    let mut zero_sink = MemoryVolumeSink::default();
+    zero_builder.write_to_sink(&mut zero_sink).unwrap();
+    let zero_main = zero_sink.into_volumes().remove(&0).unwrap();
+    let mut zero_archive =
+        Archive::open_with_volumes(Cursor::new(zero_main), MemoryVolumeSource::new([])).unwrap();
+    assert_eq!(
+        zero_archive.read_entry_by_path("not-zero.bin").unwrap(),
+        [0]
     );
 
     let mut builder = ArchiveBuilder::new();

@@ -1,13 +1,15 @@
 use crate::model::DzFixedCosts;
 use crate::range::AdaptiveModel;
 use crate::{DzipError, MAX_MATCH, MIN_MATCH, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 struct LzMatcher {
     window: usize,
     allow_position_zero: bool,
-    chains: HashMap<u32, VecDeque<usize>>,
-    stale_keys: HashSet<u32>,
+    chains: BTreeMap<u32, VecDeque<usize>>,
+    stale_keys: BTreeSet<u32>,
 }
 
 pub(crate) struct LazyLzParser {
@@ -67,7 +69,7 @@ impl LazyLzParser {
     pub(crate) fn new_with_stale_keys(
         window: usize,
         allow_position_zero: bool,
-        stale_keys: &HashSet<u32>,
+        stale_keys: &BTreeSet<u32>,
     ) -> Self {
         Self {
             matcher: LzMatcher::new_with_stale_keys(window, allow_position_zero, stale_keys),
@@ -241,8 +243,8 @@ impl LzMatcher {
         Self {
             window,
             allow_position_zero: false,
-            chains: HashMap::new(),
-            stale_keys: HashSet::new(),
+            chains: BTreeMap::new(),
+            stale_keys: BTreeSet::new(),
         }
     }
 
@@ -250,20 +252,20 @@ impl LzMatcher {
         Self {
             window,
             allow_position_zero: true,
-            chains: HashMap::new(),
-            stale_keys: HashSet::new(),
+            chains: BTreeMap::new(),
+            stale_keys: BTreeSet::new(),
         }
     }
 
     fn new_with_stale_keys(
         window: usize,
         allow_position_zero: bool,
-        stale_keys: &HashSet<u32>,
+        stale_keys: &BTreeSet<u32>,
     ) -> Self {
         Self {
             window,
             allow_position_zero,
-            chains: HashMap::new(),
+            chains: BTreeMap::new(),
             stale_keys: stale_keys.clone(),
         }
     }
@@ -446,7 +448,7 @@ mod tests {
     fn stale_restart_hash_uses_previous_lazy_length_as_score() {
         let input = [0x10, 0x20, 0x30];
         let key = local_match_key(&input, 1).unwrap();
-        let stale_keys = HashSet::from([key]);
+        let stale_keys = BTreeSet::from([key]);
         let matcher = LzMatcher::new_with_stale_keys(1 << 16, false, &stale_keys);
         let recent_offsets = [0; 4];
 

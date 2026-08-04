@@ -3,6 +3,9 @@ use crate::matchfinder::{LazyLzParser, LzDecision, MatchCost, MatchScoring};
 use crate::model::{CommonModels, DzFixedCosts, DzFrequencyCounts, DzModels};
 use crate::range::{AdaptiveModel, RangeDecoder, RangeEncoder};
 use crate::{DzipError, END_SYMBOL, MIN_MATCH, RangeSettings, Result};
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 pub fn decompress_chunk(
     input: &[u8],
@@ -18,6 +21,16 @@ pub fn decompress_chunk_with_common_buffer(
     settings: RangeSettings,
     common_buffer: Option<&DzCommonBuffer>,
 ) -> Result<Vec<u8>> {
+    decompress_chunk_with_output(input, expected_size, settings, common_buffer, Vec::new())
+}
+
+pub(crate) fn decompress_chunk_with_output(
+    input: &[u8],
+    expected_size: usize,
+    settings: RangeSettings,
+    common_buffer: Option<&DzCommonBuffer>,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
     let settings = settings.validate()?;
     if common_buffer.is_none() {
         return decompress_chunk_with_reference_base_update(
@@ -26,6 +39,7 @@ pub fn decompress_chunk_with_common_buffer(
             settings,
             common_buffer,
             ReferenceBaseUpdate::CompressedEndpoint,
+            output,
         );
     }
 
@@ -39,6 +53,7 @@ pub fn decompress_chunk_with_common_buffer(
         settings,
         common_buffer,
         ReferenceBaseUpdate::CompressedEndpoint,
+        output,
     ) {
         Ok(output) => Ok(output),
         Err(endpoint_error) => decompress_chunk_with_reference_base_update(
@@ -47,6 +62,7 @@ pub fn decompress_chunk_with_common_buffer(
             settings,
             common_buffer,
             ReferenceBaseUpdate::Zero,
+            Vec::new(),
         )
         .or(Err(endpoint_error)),
     }
@@ -64,11 +80,15 @@ fn decompress_chunk_with_reference_base_update(
     settings: RangeSettings,
     common_buffer: Option<&DzCommonBuffer>,
     base_update: ReferenceBaseUpdate,
+    mut output: Vec<u8>,
 ) -> Result<Vec<u8>> {
     let mut decoder = RangeDecoder::new(input)?;
     let mut models = DzModels::new(settings, common_buffer.is_some())?;
     let mut recent_offsets = [0usize; 4];
-    let mut output = Vec::with_capacity(expected_size);
+    output.clear();
+    if output.capacity() < expected_size {
+        output.reserve(expected_size);
+    }
 
     loop {
         let symbol = decoder.decode(&mut models.top)?;
@@ -275,6 +295,14 @@ pub fn compress_chunk(input: &[u8], settings: RangeSettings) -> Result<Vec<u8>> 
     compress_chunk_with_references(input, settings, false, &[], &[])
 }
 
+pub(crate) fn compress_chunk_with_output(
+    input: &[u8],
+    settings: RangeSettings,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
+    compress_chunk_with_references_and_output(input, settings, false, &[], &[], output)
+}
+
 fn analyze_dz_costs(
     input: &[u8],
     settings: RangeSettings,
@@ -406,9 +434,27 @@ pub(crate) fn compress_chunk_with_references(
     references: &[ResolvedReference],
     boundaries: &[usize],
 ) -> Result<Vec<u8>> {
+    compress_chunk_with_references_and_output(
+        input,
+        settings,
+        has_combuf,
+        references,
+        boundaries,
+        Vec::new(),
+    )
+}
+
+fn compress_chunk_with_references_and_output(
+    input: &[u8],
+    settings: RangeSettings,
+    has_combuf: bool,
+    references: &[ResolvedReference],
+    boundaries: &[usize],
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
     let settings = settings.validate()?;
     let fixed_costs = analyze_dz_costs(input, settings, has_combuf, references, boundaries)?;
-    let mut encoder = RangeEncoder::new();
+    let mut encoder = RangeEncoder::with_output(output);
     let mut models = DzModels::new(settings, has_combuf)?;
     let mut recent_offsets = [0usize; 4];
     let window = 1usize

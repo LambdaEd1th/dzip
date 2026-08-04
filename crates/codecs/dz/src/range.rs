@@ -1,4 +1,7 @@
 use crate::{DzError as DzipError, Result};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
 const TOP: u32 = 0x0100_0000;
 const BOTTOM: u32 = 0x0001_0000;
@@ -272,8 +275,13 @@ pub(crate) struct RangeEncoder {
 
 impl RangeEncoder {
     pub(crate) fn new() -> Self {
+        Self::with_output(Vec::new())
+    }
+
+    pub(crate) fn with_output(mut output: Vec<u8>) -> Self {
+        output.clear();
         Self {
-            output: Vec::new(),
+            output,
             low: 0,
             range: u32::MAX,
         }

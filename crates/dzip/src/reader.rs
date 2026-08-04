@@ -221,7 +221,12 @@ impl<R: Read + Seek> DzipReader<R> {
     }
 
     pub fn read_chunk_data(&mut self, chunk: &Chunk) -> Result<Vec<u8>> {
-        Self::decompress_chunk_data(&mut self.reader, chunk, None)
+        Self::decompress_chunk_data(
+            &mut self.reader,
+            chunk,
+            None,
+            crate::codec::CodecLimits::UNLIMITED,
+        )
     }
 
     pub fn read_chunk_data_with_volumes(
@@ -238,11 +243,26 @@ impl<R: Read + Seek> DzipReader<R> {
         volume_source: &mut dyn VolumeSource,
         dz_context: Option<&DzDecodeContext>,
     ) -> Result<Vec<u8>> {
+        self.read_chunk_data_with_context_and_limits(
+            chunk,
+            volume_source,
+            dz_context,
+            crate::codec::CodecLimits::UNLIMITED,
+        )
+    }
+
+    pub fn read_chunk_data_with_context_and_limits(
+        &mut self,
+        chunk: &Chunk,
+        volume_source: &mut dyn VolumeSource,
+        dz_context: Option<&DzDecodeContext>,
+        limits: crate::codec::CodecLimits,
+    ) -> Result<Vec<u8>> {
         if chunk.file == 0 {
-            Self::decompress_chunk_data(&mut self.reader, chunk, dz_context)
+            Self::decompress_chunk_data(&mut self.reader, chunk, dz_context, limits)
         } else {
             let reader = volume_source.open_volume(chunk.file)?;
-            Self::decompress_chunk_data(reader, chunk, dz_context)
+            Self::decompress_chunk_data(reader, chunk, dz_context, limits)
         }
     }
 
@@ -283,6 +303,7 @@ impl<R: Read + Seek> DzipReader<R> {
         reader: &mut dyn ReadSeek,
         chunk: &Chunk,
         dz_context: Option<&DzDecodeContext>,
+        limits: crate::codec::CodecLimits,
     ) -> Result<Vec<u8>> {
         let encoding = crate::codec::ChunkEncoding::from_flags(chunk.flags)?;
 
@@ -294,6 +315,7 @@ impl<R: Read + Seek> DzipReader<R> {
                 crate::codec::DecodeContext {
                     expected_len: chunk.decompressed_length as usize,
                     dz: dz_context,
+                    limits,
                 },
             );
         }
@@ -317,6 +339,7 @@ impl<R: Read + Seek> DzipReader<R> {
             crate::codec::DecodeContext {
                 expected_len: chunk.decompressed_length as usize,
                 dz: dz_context,
+                limits,
             },
         )
     }

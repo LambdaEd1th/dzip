@@ -20,9 +20,42 @@ pub use flags::{ChunkEncoding, Codec, Compression, ContentHint, ParseCompression
 
 use crate::{RangeSettings, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodecLimits {
+    pub max_input_size: usize,
+    pub max_output_size: usize,
+    pub max_workspace_size: usize,
+}
+
+impl CodecLimits {
+    pub const UNLIMITED: Self = Self {
+        max_input_size: usize::MAX,
+        max_output_size: usize::MAX,
+        max_workspace_size: usize::MAX,
+    };
+}
+
+impl Default for CodecLimits {
+    fn default() -> Self {
+        Self::UNLIMITED
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct DecodeContext<'a> {
     pub expected_len: usize,
     pub dz: Option<&'a DzDecodeContext>,
+    pub limits: CodecLimits,
+}
+
+impl DecodeContext<'_> {
+    pub const fn new(expected_len: usize) -> Self {
+        Self {
+            expected_len,
+            dz: None,
+            limits: CodecLimits::UNLIMITED,
+        }
+    }
 }
 
 pub fn encode(
@@ -81,6 +114,20 @@ pub fn decode(
     input: &[u8],
     context: DecodeContext<'_>,
 ) -> Result<Vec<u8>> {
+    if input.len() > context.limits.max_input_size {
+        return Err(crate::DzipError::LimitExceeded {
+            resource: "codec input size",
+            limit: context.limits.max_input_size as u64,
+            actual: input.len() as u64,
+        });
+    }
+    if context.expected_len > context.limits.max_output_size {
+        return Err(crate::DzipError::LimitExceeded {
+            resource: "codec output size",
+            limit: context.limits.max_output_size as u64,
+            actual: context.expected_len as u64,
+        });
+    }
     match encoding.compression {
         Compression::Copy => Ok(input.to_vec()),
         Compression::Zero => Ok(vec![0; context.expected_len]),
@@ -90,7 +137,7 @@ pub fn decode(
                 let dz_context = context
                     .dz
                     .ok_or(CodecError::MissingContext { codec: Codec::Dz })?;
-                dz::decode(input, context.expected_len, dz_context)
+                dz::decode(input, context.expected_len, dz_context, context.limits)
             }
             #[cfg(not(feature = "dz"))]
             {
@@ -100,7 +147,7 @@ pub fn decode(
         Compression::Bzip => {
             #[cfg(feature = "bzip")]
             {
-                bzip::decode(input, context.expected_len)
+                bzip::decode(input, context.expected_len, context.limits)
             }
             #[cfg(not(feature = "bzip"))]
             {
@@ -110,7 +157,7 @@ pub fn decode(
         Compression::Zlib => {
             #[cfg(feature = "zlib")]
             {
-                zlib::decode(input, context.expected_len)
+                zlib::decode(input, context.expected_len, context.limits)
             }
             #[cfg(not(feature = "zlib"))]
             {
@@ -120,7 +167,7 @@ pub fn decode(
         Compression::Lzma => {
             #[cfg(feature = "lzma")]
             {
-                lzma::decode(input, context.expected_len)
+                lzma::decode(input, context.expected_len, context.limits)
             }
             #[cfg(not(feature = "lzma"))]
             {
@@ -167,5 +214,30 @@ mod feature_tests {
             }))
         ));
         let _ = settings;
+    }
+
+    #[test]
+    fn unified_decode_limits_apply_before_dispatch() {
+        let encoding = ChunkEncoding {
+            compression: Compression::Copy,
+            random_access: false,
+            common_buffer: false,
+            content_hint: None,
+            unknown_flags: 0,
+        };
+        let error = decode(
+            encoding,
+            b"too large",
+            DecodeContext {
+                expected_len: 9,
+                dz: None,
+                limits: CodecLimits {
+                    max_input_size: 1,
+                    ..CodecLimits::UNLIMITED
+                },
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, crate::DzipError::LimitExceeded { .. }));
     }
 }

@@ -2,7 +2,10 @@ use super::common::{CommonReference, CommonRoot, CommonSegment, CommonSelection}
 use crate::chunk::encode_recent_distance;
 use crate::matchfinder::{LazyLzParser, LzDecision, MatchCost, MatchScoring, common_match_hash};
 use crate::{DzipError, RangeSettings, Result};
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Clone, Debug)]
 struct CommonScanState {
@@ -36,7 +39,7 @@ impl CommonScanState {
         input: &[u8],
         global_span: usize,
         minimum_match: usize,
-        chains: &mut HashMap<u32, Vec<usize>>,
+        chains: &mut BTreeMap<u32, Vec<usize>>,
     ) {
         let global_span = global_span as i128;
         let match_positions = input.len().saturating_sub(minimum_match) as i128;
@@ -102,8 +105,8 @@ pub(crate) fn find_common_references(
                 .collect()
         })
         .collect();
-    let mut chains: Vec<HashMap<u32, Vec<usize>>> =
-        (0..inputs.len()).map(|_| HashMap::new()).collect();
+    let mut chains: Vec<BTreeMap<u32, Vec<usize>>> =
+        (0..inputs.len()).map(|_| BTreeMap::new()).collect();
     let mut selections = Vec::<CommonSelection>::new();
     let global_span = inputs
         .iter()
@@ -351,7 +354,7 @@ pub(crate) fn find_common_references(
     );
 
     let mut segments = Vec::<CommonSegment>::new();
-    let mut boundary_to_segment = HashMap::<(usize, usize), usize>::new();
+    let mut boundary_to_segment = BTreeMap::<(usize, usize), usize>::new();
     for root in roots {
         for (boundary_index, &start) in root.boundaries.iter().enumerate() {
             let end = root
@@ -451,7 +454,7 @@ fn order_common_roots(
     fn record_root(
         record: Record,
         selections: &[CommonSelection],
-        source_roots: &HashMap<(usize, usize), usize>,
+        source_roots: &BTreeMap<(usize, usize), usize>,
     ) -> Option<usize> {
         match record {
             Record::Source { root, .. } => Some(root),
@@ -464,7 +467,7 @@ fn order_common_roots(
         }
     }
 
-    let mut source_roots = HashMap::<(usize, usize), usize>::new();
+    let mut source_roots = BTreeMap::<(usize, usize), usize>::new();
     let mut records = vec![Vec::<(usize, Record)>::new(); file_count];
     let mut root_record_positions = vec![None; roots.len()];
     for (root_index, root) in roots.iter().enumerate() {
@@ -549,7 +552,7 @@ fn order_common_roots(
         roots: &[CommonRoot],
         selections: &[CommonSelection],
         records: &[Vec<(usize, Record)>],
-        source_roots: &HashMap<(usize, usize), usize>,
+        source_roots: &BTreeMap<(usize, usize), usize>,
         root_record_positions: &[Option<(usize, usize)>],
         reference_record_positions: &[Option<(usize, usize)>],
         attached: &[Vec<Vec<usize>>],
@@ -728,7 +731,7 @@ fn trim_common_selections(
             }
         }
 
-        let mut sources = HashMap::<(usize, usize), (usize, i64, Vec<usize>)>::new();
+        let mut sources = BTreeMap::<(usize, usize), (usize, i64, Vec<usize>)>::new();
         for (index, selection) in selections.iter().enumerate() {
             if remove[index] {
                 continue;

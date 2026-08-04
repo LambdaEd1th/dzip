@@ -7,8 +7,16 @@ archives. The workspace contains the reusable `dzip` library and the
 `dzip-cli` command-line application.
 
 The implementation is compatible with `dzip.exe`, including split volumes,
-native DZ compression and COMBUF references, Bzip, LZMA SDK 9.20 output, and
-the original program's unusual truncated-gzip framing.
+native DZ compression and COMBUF references, BZip2, LZMA1, and the original
+program's unusual truncated-gzip/DEFLATE framing. All four codec engines are
+safe `no_std + alloc` Rust implementations with no C, FFI, or external
+compression library. Standard-codec output need not match the original encoder
+byte for byte; native DZ and COMBUF output is tested for byte identity.
+
+The four codec crates share one public architecture: typed options and errors,
+one-shot and allocation-reusing APIs, and configurable input, output, and
+workspace limits. `ReadOptions::limits` propagates those ceilings into archive
+decoding, while Dzip-specific framing stays in the `dzip` façade.
 
 ## Library
 
@@ -72,10 +80,11 @@ writer remain available for inspection and reverse-engineering tools.
 
 ### Compatibility and safety
 
-`Compatibility::Original` is the default. It reproduces original writer quirks
-and repairs known incorrect physical-length fields while reading.
-`Compatibility::Strict` rejects those malformed fields and unsafe zero-chunk
-requests.
+Archives always use the original dzip.exe compatibility behavior: the writer
+reproduces its known physical-length quirks, while the reader repairs those
+fields from the physical chunk layout. `Compression::Zero` follows the original
+behavior and represents the requested length as zero bytes regardless of the
+input contents.
 
 High-level extraction rejects absolute paths, parent traversal, existing
 symlink parents, and symlink output targets. `ReadLimits` bounds metadata and
@@ -168,9 +177,9 @@ crates/
 ├── dzip-cli/             CLI and manifest adapter
 ├── dzip-gui/             Dioxus desktop and WebAssembly archive manager
 └── codecs/
-    ├── bzip/             Pure-Rust Bzip engine
-    ├── lzma/             LZMA SDK 9.20-compatible engine
-    ├── zlib/             zlib 1.1.3-compatible DEFLATE engine
+    ├── bzip/             Standard BZip2 engine
+    ├── lzma/             LZMA1 engine
+    ├── zlib/             RFC 1950/1951 zlib and DEFLATE engine
     └── dz/               Native DZ/COMBUF engine
 ```
 
@@ -189,5 +198,6 @@ crates.io builds use the same codec releases.
 
 ## License
 
-This repository is distributed under AGPL-3.0-or-later. Consumers embedding the
-library should review the license terms and the codec-specific license files.
+This repository, including the codec implementations, is distributed under
+AGPL-3.0-or-later. The fixed BZip2 legacy-randomization table retains its
+upstream permissive notice in `crates/codecs/bzip/LICENSE`.

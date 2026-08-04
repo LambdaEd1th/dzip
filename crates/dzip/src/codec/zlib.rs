@@ -1,43 +1,20 @@
-use super::{Codec, CodecError};
+use super::{Codec, CodecError, CodecLimits};
 use crate::Result;
-use zlib::{Deflate, DeflateFlush, Inflate, InflateFlush, Status};
-
 const GZIP_HEADER: [u8; 10] = [
     0x1f, 0x8b, 8, 0, // magic, deflate, no optional fields
     0, 0, 0, 0, // timestamp
     0, 11, // default compression, Windows/NTFS
 ];
 
-/// Reproduces dzip.exe's zlib 1.1.3 writer: a gzip header followed by a raw
-/// DEFLATE stream, deliberately without the normal CRC32/ISIZE trailer.
+/// Writes dzip's gzip-like framing: a ten-byte gzip header followed by raw
+/// DEFLATE, deliberately without the normal CRC32/ISIZE trailer.
 pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
     // dzip's archive layer does not invoke the external coder for empty
     // chunks; it stores a zero-length physical stream with the codec flag.
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    if input.len() > u32::MAX as usize {
-        return Err(codec_error("input exceeds zlib 1.1.3's 32-bit limit"));
-    }
-
-    // zlib 1.1.3 documents source + 0.1% + 12 bytes as sufficient for a
-    // one-shot stream. Add one extra byte for integer rounding.
-    let deflate_bound = input
-        .len()
-        .checked_add(input.len().div_ceil(1000))
-        .and_then(|length| length.checked_add(13))
-        .ok_or_else(|| codec_error("compressed-size bound overflow"))?;
-    let mut raw = vec![0; deflate_bound];
-    let mut stream = Deflate::new(6, false, 15);
-    let status = stream
-        .compress(input, &mut raw, DeflateFlush::Finish)
-        .map_err(|error| codec_error(error.as_str()))?;
-    if status != Status::StreamEnd {
-        return Err(codec_error("output buffer was unexpectedly too small"));
-    }
-    let written = usize::try_from(stream.total_out())
-        .map_err(|_| codec_error("compressed size does not fit usize"))?;
-    raw.truncate(written);
+    let raw = zlib::encode_raw(input);
 
     let mut output = Vec::with_capacity(GZIP_HEADER.len() + raw.len());
     output.extend_from_slice(&GZIP_HEADER);
@@ -47,45 +24,55 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
 
 /// Accepts both dzip's truncated-gzip framing and ordinary RFC 1950 zlib
 /// streams, matching the two paths in the original decoder.
-pub(crate) fn decode(input: &[u8], expected_length: usize) -> Result<Vec<u8>> {
+pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) -> Result<Vec<u8>> {
     if input.is_empty() && expected_length == 0 {
         return Ok(Vec::new());
     }
-    if input.len() > u32::MAX as usize || expected_length > u32::MAX as usize {
-        return Err(codec_error("stream exceeds zlib 1.1.3's 32-bit limit"));
-    }
-
-    let (payload, zlib_header) = if input.starts_with(&[0x1f, 0x8b]) {
-        (&input[gzip_payload_offset(input)?..], false)
+    if input.starts_with(&[0x1f, 0x8b]) {
+        let payload = &input[gzip_payload_offset(input)?..];
+        decode_engine(
+            payload,
+            expected_length,
+            zlib::StreamFormat::RawDeflate,
+            limits,
+        )
     } else {
-        (input, true)
-    };
+        decode_engine(input, expected_length, zlib::StreamFormat::Zlib, limits)
+    }
+}
 
-    // The spare byte both allows an empty stream to make progress and detects
-    // an archive header that understates the decompressed size.
-    let capacity = expected_length
-        .checked_add(1)
-        .ok_or_else(|| codec_error("decompressed-size bound overflow"))?;
-    let mut output = vec![0; capacity];
-    let mut stream = Inflate::new(zlib_header, 15);
-    let status = stream
-        .decompress(payload, &mut output, InflateFlush::Finish)
-        .map_err(|error| codec_error(error.as_str()))?;
-    if status != Status::StreamEnd {
-        return Err(codec_error("truncated or incomplete deflate stream"));
-    }
-    let written = usize::try_from(stream.total_out())
-        .map_err(|_| codec_error("decompressed size does not fit usize"))?;
-    if written != expected_length {
-        return Err(CodecError::LengthMismatch {
+fn decode_engine(
+    input: &[u8],
+    expected_length: usize,
+    format: zlib::StreamFormat,
+    limits: CodecLimits,
+) -> Result<Vec<u8>> {
+    zlib::decode(
+        input,
+        &zlib::DecoderOptions {
+            format,
+            expected_size: expected_length,
+            limits: zlib::ResourceLimits {
+                max_input_size: limits.max_input_size,
+                max_output_size: limits.max_output_size,
+                max_workspace_size: limits.max_workspace_size,
+            },
+        },
+    )
+    .map_err(codec_engine_error)
+}
+
+fn codec_engine_error(error: zlib::Error) -> crate::DzipError {
+    match error.kind() {
+        zlib::ErrorKind::InputLimitExceeded
+        | zlib::ErrorKind::OutputLimitExceeded
+        | zlib::ErrorKind::WorkspaceLimitExceeded => CodecError::SizeLimit {
             codec: Codec::Zlib,
-            expected: expected_length,
-            actual: written,
+            message: error.to_string(),
         }
-        .into());
+        .into(),
+        _ => codec_error(error.as_str()),
     }
-    output.truncate(written);
-    Ok(output)
 }
 
 fn gzip_payload_offset(input: &[u8]) -> Result<usize> {

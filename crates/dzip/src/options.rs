@@ -1,13 +1,3 @@
-/// Controls whether dzip.exe quirks are reproduced or rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Compatibility {
-    /// Require internally consistent physical sizes and reject unknown flags.
-    Strict,
-    /// Reproduce writer quirks and repair known dzip.exe length fields.
-    #[default]
-    Original,
-}
-
 #[cfg(feature = "decode")]
 #[derive(Debug, Clone)]
 pub struct ReadLimits {
@@ -16,6 +6,9 @@ pub struct ReadLimits {
     pub max_chunk_references: usize,
     pub max_string_length: usize,
     pub max_metadata_bytes: usize,
+    pub max_chunk_input_size: usize,
+    pub max_chunk_output_size: usize,
+    pub max_codec_workspace: usize,
     pub max_entry_size: u64,
     pub max_total_output: u64,
 }
@@ -29,6 +22,9 @@ impl Default for ReadLimits {
             max_chunk_references: 1_000_000,
             max_string_length: 1024 * 1024,
             max_metadata_bytes: 64 * 1024 * 1024,
+            max_chunk_input_size: u32::MAX as usize,
+            max_chunk_output_size: u32::MAX as usize,
+            max_codec_workspace: 1024 * 1024 * 1024,
             max_entry_size: 16 * 1024 * 1024 * 1024,
             max_total_output: 256 * 1024 * 1024 * 1024,
         }
@@ -44,6 +40,9 @@ impl ReadLimits {
             max_chunk_references: usize::MAX,
             max_string_length: usize::MAX - 1,
             max_metadata_bytes: usize::MAX,
+            max_chunk_input_size: usize::MAX,
+            max_chunk_output_size: usize::MAX,
+            max_codec_workspace: usize::MAX,
             max_entry_size: u64::MAX,
             max_total_output: u64::MAX,
         }
@@ -53,7 +52,6 @@ impl ReadLimits {
 #[cfg(feature = "decode")]
 #[derive(Debug, Clone, Default)]
 pub struct ReadOptions {
-    pub compatibility: Compatibility,
     pub limits: ReadLimits,
 }
 
@@ -62,7 +60,6 @@ pub struct ReadOptions {
 pub struct PackOptions {
     pub volume_names: Vec<String>,
     pub alignment: u32,
-    pub compatibility: Compatibility,
     /// Archive-wide native DZ and COMBUF settings.
     pub dz: crate::codec::DzOptions,
 }
@@ -73,7 +70,6 @@ impl Default for PackOptions {
         Self {
             volume_names: vec!["archive.dz".to_string()],
             alignment: 0,
-            compatibility: Compatibility::Original,
             dz: crate::codec::DzOptions::default(),
         }
     }

@@ -1,5 +1,7 @@
 //! Adapter for the optional native DZ range/LZ codec.
 
+#[cfg(feature = "dz")]
+use super::CodecLimits;
 #[cfg(all(not(feature = "dz"), feature = "encode"))]
 use super::{Codec, CodecError};
 use crate::{RangeSettings, Result};
@@ -91,12 +93,20 @@ pub(crate) fn decode(
     input: &[u8],
     expected_length: usize,
     context: &DzDecodeContext,
+    limits: CodecLimits,
 ) -> Result<Vec<u8>> {
-    dz::decompress_chunk_with_common_buffer(
+    dz::decode(
         input,
-        expected_length,
-        context.settings.into(),
-        context.common_buffer.as_ref(),
+        &dz::DecoderOptions {
+            settings: context.settings.into(),
+            expected_size: expected_length,
+            common_buffer: context.common_buffer.as_ref(),
+            limits: dz::ResourceLimits {
+                max_input_size: limits.max_input_size,
+                max_output_size: limits.max_output_size,
+                max_workspace_size: limits.max_workspace_size,
+            },
+        },
     )
     .map_err(Into::into)
 }

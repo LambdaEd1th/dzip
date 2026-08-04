@@ -9,7 +9,7 @@ pub struct Chunk {
     /// Length of the decoded data.
     ///
     /// Some original archives store the uncompressed size in both length
-    /// fields; compatibility mode repairs that known writer quirk.
+    /// fields; the high-level reader repairs that known writer quirk.
     pub decompressed_length: u32,
     /// Chunk encoding and modifier flags.
     pub flags: u16,

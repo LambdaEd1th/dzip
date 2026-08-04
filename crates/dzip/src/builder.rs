@@ -234,16 +234,7 @@ impl ArchiveBuilder {
                     ))
                 })?,
             };
-            let compression = effective_compression(entry.options)?;
-            if options.compatibility == crate::Compatibility::Strict
-                && compression == Compression::Zero
-                && data.iter().any(|byte| *byte != 0)
-            {
-                return Err(invalid_input(format!(
-                    "zero compression requested for non-zero data in {}",
-                    entry.archive_path.display()
-                )));
-            }
+            effective_compression(entry.options)?;
             Ok(PreparedEntry {
                 archive_path: entry.archive_path.clone(),
                 data,
@@ -495,9 +486,7 @@ fn write_chunk<S: VolumeSink>(
     let offset = u32::try_from(offset_u64)
         .map_err(|_| invalid_input("chunk offset exceeds the 32-bit format field"))?;
     writer.write_all(&entry.compressed)?;
-    let compressed_length = if options.compatibility == crate::Compatibility::Original
-        && entry.flags & (CHUNK_ZLIB | CHUNK_BZIP | CHUNK_LZMA) != 0
-    {
+    let compressed_length = if entry.flags & (CHUNK_ZLIB | CHUNK_BZIP | CHUNK_LZMA) != 0 {
         entry.original_len
     } else {
         entry.compressed.len()

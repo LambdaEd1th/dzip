@@ -1,5 +1,8 @@
 use crate::range::AdaptiveModel;
 use crate::{DzipError, RangeSettings, Result};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
 pub(crate) struct DzModels {
     pub(crate) top: AdaptiveModel,

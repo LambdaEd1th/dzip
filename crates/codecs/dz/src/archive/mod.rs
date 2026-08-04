@@ -9,7 +9,10 @@ use self::common::{
 use crate::chunk::{compress_chunk, compress_chunk_with_references};
 use crate::model::{CommonModels, DzFixedCosts};
 use crate::{DzipError, RangeSettings, Result};
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
 #[derive(Clone, Debug)]
 pub struct DzEncoderOptions {
@@ -144,7 +147,7 @@ pub fn compress_archive(
     // restart offsets are measured after it.
     common_bytes.push(0x7f);
     let mut payload_offset = 1usize;
-    let mut stale_match_keys = HashSet::new();
+    let mut stale_match_keys = BTreeSet::new();
     for segment in &mut segments {
         segment.target = payload_offset;
         segment.encoded = compress_common_segment(

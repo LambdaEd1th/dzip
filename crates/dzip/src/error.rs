@@ -102,10 +102,20 @@ impl From<crate::codec::CodecError> for DzipError {
 #[cfg(feature = "dz")]
 impl From<dz::DzError> for DzipError {
     fn from(error: dz::DzError) -> Self {
-        Self::Codec(crate::codec::CodecError::invalid(
-            crate::codec::Codec::Dz,
-            error.to_string(),
-        ))
+        match error.kind() {
+            dz::ErrorKind::InputLimitExceeded
+            | dz::ErrorKind::OutputLimitExceeded
+            | dz::ErrorKind::WorkspaceLimitExceeded => {
+                Self::Codec(crate::codec::CodecError::SizeLimit {
+                    codec: crate::codec::Codec::Dz,
+                    message: error.to_string(),
+                })
+            }
+            _ => Self::Codec(crate::codec::CodecError::invalid(
+                crate::codec::Codec::Dz,
+                error.to_string(),
+            )),
+        }
     }
 }
 

@@ -1,14 +1,17 @@
-//! Pure-Rust reproduction of the LZMA stream emitted by dzip.exe.
+//! Dzip's LZMA1 codec, stored in the standard 13-byte LZMA-alone framing.
 //!
-//! dzip initializes the LZMA SDK 9.20 level-5 defaults, overrides the
-//! dictionary to 64 KiB, and enables the end marker. The vendored encoder is
-//! kept byte-exact with that SDK version for these properties.
+//! The properties retain dzip.exe's 64-KiB dictionary and level-5-style match
+//! limits. The independent encoder is format-compatible rather than
+//! byte-for-byte compatible with any particular LZMA SDK release.
 
-use super::{Codec, CodecError};
+use super::{Codec, CodecError, CodecLimits};
 use crate::Result;
-use lzma::{LzmaProps, decode_raw, decoder_props, encode_with_end_marker};
+use lzma::{LzmaProps, decoder_props, encode_with_end_marker};
 
 pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
     let properties = LzmaProps {
         lc: 3,
         lp: 0,
@@ -17,16 +20,22 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
         fb: 32,
         mc: 32,
     };
-    let raw = encode_with_end_marker(input, &properties);
+    let raw =
+        encode_with_end_marker(input, &properties).map_err(|error| codec_error(error.as_str()))?;
 
     let mut output = Vec::with_capacity(13 + raw.len());
-    output.extend_from_slice(&decoder_props(&properties));
+    output.extend_from_slice(
+        &decoder_props(&properties).map_err(|error| codec_error(error.as_str()))?,
+    );
     output.extend_from_slice(&(input.len() as u64).to_le_bytes());
     output.extend_from_slice(&raw);
     Ok(output)
 }
 
-pub(crate) fn decode(input: &[u8], expected_length: usize) -> Result<Vec<u8>> {
+pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) -> Result<Vec<u8>> {
+    if input.is_empty() && expected_length == 0 {
+        return Ok(Vec::new());
+    }
     let header = input
         .get(..13)
         .ok_or_else(|| codec_error("truncated LZMA-alone header"))?;
@@ -46,8 +55,33 @@ pub(crate) fn decode(input: &[u8], expected_length: usize) -> Result<Vec<u8>> {
         )));
     }
 
-    decode_raw(&input[13..], &properties, expected_length)
-        .map_err(|error| codec_error(&error.to_string()))
+    let options = lzma::DecoderOptions::from_decoder_properties(properties, expected_length)
+        .map_err(codec_engine_error)?;
+    lzma::decode(
+        &input[13..],
+        &lzma::DecoderOptions {
+            limits: lzma::ResourceLimits {
+                max_input_size: limits.max_input_size,
+                max_output_size: limits.max_output_size,
+                max_workspace_size: limits.max_workspace_size,
+            },
+            ..options
+        },
+    )
+    .map_err(codec_engine_error)
+}
+
+fn codec_engine_error(error: lzma::Error) -> crate::DzipError {
+    match error.kind() {
+        lzma::ErrorKind::InputLimitExceeded
+        | lzma::ErrorKind::OutputLimitExceeded
+        | lzma::ErrorKind::WorkspaceLimitExceeded => CodecError::SizeLimit {
+            codec: Codec::Lzma,
+            message: error.to_string(),
+        }
+        .into(),
+        _ => codec_error(error.as_str()),
+    }
 }
 
 fn codec_error(message: &str) -> crate::DzipError {
@@ -57,48 +91,20 @@ fn codec_error(message: &str) -> crate::DzipError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
 
     #[test]
-    fn empty_stream_matches_sdk_920() {
-        assert_eq!(
-            encode(&[]).unwrap(),
-            [
-                0x5d, 0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x83, 0xff, 0xfb, 0xff,
-                0xff, 0xc0, 0x00, 0x00, 0x00,
-            ]
-        );
+    fn lzma_alone_header_uses_dzip_properties_and_size() {
+        let encoded = encode(b"payload").unwrap();
+        assert_eq!(&encoded[..5], &[0x5d, 0x00, 0x00, 0x01, 0x00]);
+        assert_eq!(&encoded[5..13], &7u64.to_le_bytes());
     }
 
     #[test]
-    fn high_entropy_stream_matches_sdk_920_oracle() {
-        // Carrying the PRNG state through these lengths reproduces an oracle
-        // input that distinguishes SDK 9.20's parser from SDK 23.01.
-        let mut state = 0x9e37_79b9u32;
-        let mut fixture = Vec::new();
-        for length in [
-            2usize, 3, 4, 7, 8, 15, 16, 31, 32, 63, 64, 255, 256, 1023, 4096, 32_767, 65_535,
-        ] {
-            fixture = (0..length)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 17;
-                    state ^= state << 5;
-                    state as u8
-                })
-                .collect();
-        }
-
-        let stream = encode(&fixture).unwrap();
-        assert_eq!(stream.len(), 66_477);
-        let digest = Sha256::digest(stream);
+    fn empty_input_matches_dzip_zero_length_storage() {
+        assert!(encode(&[]).unwrap().is_empty());
         assert_eq!(
-            &digest[..],
-            &[
-                0xa1, 0x9b, 0xb5, 0x1d, 0x97, 0xae, 0xda, 0xdc, 0xe4, 0x76, 0x72, 0x94, 0xfa, 0xe1,
-                0xe6, 0xe5, 0x14, 0xc7, 0xd7, 0x25, 0x7e, 0x3c, 0xa6, 0xdb, 0x89, 0x40, 0x3b, 0xde,
-                0x20, 0x41, 0x7e, 0xf7,
-            ]
+            decode(&[], 0, CodecLimits::UNLIMITED).unwrap(),
+            Vec::<u8>::new()
         );
     }
 
@@ -110,20 +116,23 @@ mod tests {
             (0..=255).cycle().take(100_000).collect(),
         ] {
             let encoded = encode(&input).unwrap();
-            assert_eq!(decode(&encoded, input.len()).unwrap(), input);
+            assert_eq!(
+                decode(&encoded, input.len(), CodecLimits::UNLIMITED).unwrap(),
+                input
+            );
         }
     }
 
     #[test]
     fn malformed_lzma_alone_streams_return_errors() {
-        assert!(decode(&[], 0).is_err());
+        assert!(decode(&[0], 0, CodecLimits::UNLIMITED).is_err());
 
         let mut mismatched = encode(b"payload").unwrap();
         mismatched[5..13].copy_from_slice(&8u64.to_le_bytes());
-        assert!(decode(&mismatched, 7).is_err());
+        assert!(decode(&mismatched, 7, CodecLimits::UNLIMITED).is_err());
 
         let mut truncated = encode(b"payload").unwrap();
         truncated.truncate(15);
-        assert!(decode(&truncated, 7).is_err());
+        assert!(decode(&truncated, 7, CodecLimits::UNLIMITED).is_err());
     }
 }

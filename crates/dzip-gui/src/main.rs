@@ -16,7 +16,6 @@ mod preferences;
 use archive_ops::{build_archive, normalise_archive_name, open_archive, read_entries};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
-use dzip::Compatibility;
 use i18n::{I18n, Locale};
 use model::{
     CompressionChoice, DraftFile, DzCompressionOptions, EntryView, LoadedArchive, WorkspacePage,
@@ -168,7 +167,6 @@ fn App() -> Element {
     let mut archive_name = use_signal(|| "game-assets.dz".to_string());
     let mut alignment = use_signal(|| 0u32);
     let mut random_access = use_signal(|| false);
-    let mut compatibility = use_signal(Compatibility::default);
     let mut dz_options = use_signal(DzCompressionOptions::default);
     let mut editing_source = use_signal(|| None::<String>);
     let next_id = use_signal(|| 1u64);
@@ -306,7 +304,6 @@ fn App() -> Element {
                                     archive_name.set("game-assets.dz".to_string());
                                     alignment.set(0);
                                     random_access.set(false);
-                                    compatibility.set(Compatibility::Original);
                                     dz_options.set(DzCompressionOptions::default());
                                     editing_source.set(None);
                                 }
@@ -379,7 +376,6 @@ fn App() -> Element {
                                 archive_name: archive_name,
                                 alignment: alignment,
                                 random_access: random_access,
-                                compatibility: compatibility,
                                 dz_options: dz_options,
                                 editing_source: editing_source,
                                 logs: logs,
@@ -390,7 +386,6 @@ fn App() -> Element {
                                     archive_name.set("game-assets.dz".to_string());
                                     alignment.set(0);
                                     random_access.set(false);
-                                    compatibility.set(Compatibility::Original);
                                     dz_options.set(DzCompressionOptions::default());
                                     editing_source.set(None);
                                     page.set(WorkspacePage::Create);
@@ -404,7 +399,6 @@ fn App() -> Element {
                                 archive_name: archive_name,
                                 alignment: alignment,
                                 random_access: random_access,
-                                compatibility: compatibility,
                                 dz_options: dz_options,
                                 busy: busy,
                                 toast: toast,
@@ -855,7 +849,6 @@ fn BrowsePage(
     archive_name: Signal<String>,
     alignment: Signal<u32>,
     random_access: Signal<bool>,
-    compatibility: Signal<Compatibility>,
     dz_options: Signal<DzCompressionOptions>,
     editing_source: Signal<Option<String>>,
     logs: Signal<Vec<String>>,
@@ -869,7 +862,6 @@ fn BrowsePage(
     let empty_description = i18n.t("empty-open-description");
     let select_archive = i18n.t("choose-dz-files");
     let create_archive = i18n.t("create-new-archive");
-    let compatibility_mode = i18n.t("compatibility-mode");
     let Some(archive_value) = archive.read().as_ref().cloned() else {
         return rsx! {
             div { class: "empty-state glass-card",
@@ -886,10 +878,6 @@ fn BrowsePage(
                 }
                 h1 { "{empty_title}" }
                 p { "{empty_description}" }
-                div { class: "open-compatibility",
-                    span { class: "field-label", "{compatibility_mode}" }
-                    CompatibilitySelector { compatibility }
-                }
                 div { class: "empty-actions",
                     label { class: "button primary large file-action",
                         Icon { name: IconName::FolderOpen, size: 19 }
@@ -933,12 +921,7 @@ fn BrowsePage(
                                         lower.ends_with(".dz") || lower.ends_with(".dzip")
                                     }).unwrap_or(0);
                                     let (main_name, main_bytes) = loaded.remove(main_index);
-                                    match open_archive(
-                                        main_name.clone(),
-                                        main_bytes,
-                                        loaded,
-                                        compatibility(),
-                                    ) {
+                                    match open_archive(main_name.clone(), main_bytes, loaded) {
                                         Ok(value) => {
                                             focused_entry.set(None);
                                             archive.set(Some(value));
@@ -1127,7 +1110,6 @@ fn BrowsePage(
                                     archive_name.set(source_name.clone());
                                     alignment.set(0);
                                     random_access.set(false);
-                                    compatibility.set(archive_value.compatibility);
                                     dz_options.set(archive_value.dz_options);
                                     editing_source.set(Some(source_name.clone()));
                                     page.set(WorkspacePage::Create);
@@ -1333,7 +1315,6 @@ fn CreatePage(
     archive_name: Signal<String>,
     alignment: Signal<u32>,
     random_access: Signal<bool>,
-    compatibility: Signal<Compatibility>,
     mut dz_options: Signal<DzCompressionOptions>,
     busy: Signal<Option<String>>,
     toast: Signal<Option<(bool, String)>>,
@@ -1353,7 +1334,6 @@ fn CreatePage(
         .map(|file| file.bytes.len() as u64)
         .sum();
     let current_compression = compression();
-    let current_compatibility = compatibility();
     let current_dz_options = dz_options();
     let has_dz_entries = draft_files
         .read()
@@ -1396,7 +1376,6 @@ fn CreatePage(
     let archive_settings = i18n.t("archive-settings");
     let per_file_hint = i18n.t("per-file-hint");
     let archive_name_label = i18n.t("archive-name");
-    let compatibility_mode = i18n.t("compatibility-mode");
     let default_algorithm = i18n.t("default-algorithm");
     let apply_all = i18n.t("apply-all");
     let alignment_label = i18n.t("data-alignment");
@@ -1452,16 +1431,11 @@ fn CreatePage(
                             &name,
                             align,
                             random,
-                            current_compatibility,
                             dz,
                         ) {
                             Ok(bytes) => {
-                                let reopened = open_archive(
-                                    name.clone(),
-                                    bytes.clone(),
-                                    Vec::new(),
-                                    current_compatibility,
-                                );
+                                let reopened =
+                                    open_archive(name.clone(), bytes.clone(), Vec::new());
                                 busy.set(Some(i18n.t("saving-archive")));
                                 match platform::save_bytes(&name, bytes).await {
                                     Ok(_) => {
@@ -1623,9 +1597,6 @@ fn CreatePage(
                         oninput: move |event| archive_name.set(event.value()),
                     }
                 }
-
-                label { class: "field-label", "{compatibility_mode}" }
-                CompatibilitySelector { compatibility }
 
                 div { class: "field-label row-label",
                     span { "{default_algorithm}" }
@@ -1855,47 +1826,6 @@ fn CreatePage(
                     div {
                         strong { "{local_processing}" }
                         span { "{local_processing_description}" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn CompatibilitySelector(mut compatibility: Signal<Compatibility>) -> Element {
-    let locale = use_context::<Signal<Locale>>();
-    let i18n = I18n::new(locale());
-    let current = compatibility();
-    let compatibility_label = i18n.t("compatibility-mode");
-    const OPTIONS: [Compatibility; 2] = [Compatibility::Original, Compatibility::Strict];
-
-    rsx! {
-        div { class: "compatibility-grid", role: "radiogroup", aria_label: compatibility_label,
-            for option in OPTIONS {
-                {
-                    let (label_key, description_key) = match option {
-                        Compatibility::Original => (
-                            "compatibility-original",
-                            "compatibility-original-description",
-                        ),
-                        Compatibility::Strict => (
-                            "compatibility-strict",
-                            "compatibility-strict-description",
-                        ),
-                    };
-                    let active = option == current;
-                    rsx! {
-                        button {
-                            class: if active { "compatibility-option active" } else { "compatibility-option" },
-                            r#type: "button",
-                            role: "radio",
-                            aria_checked: if active { "true" } else { "false" },
-                            onclick: move |_| compatibility.set(option),
-                            span { class: "radio-dot" }
-                            strong { "{i18n.t(label_key)}" }
-                            small { "{i18n.t(description_key)}" }
-                        }
                     }
                 }
             }

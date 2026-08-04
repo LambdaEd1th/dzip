@@ -2,13 +2,15 @@ use dzip::format::{
     CHUNK_BZIP, CHUNK_COMBUF, CHUNK_COPYCOMP, CHUNK_DZ, CHUNK_JPEG, CHUNK_LZMA, CHUNK_RANDOMACCESS,
     CHUNK_ZLIB,
 };
-use dzip::reader::DzipReader;
+use dzip::reader::{DzipReader, correct_chunk_sizes};
+use std::collections::HashMap;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn native_fixtures_repack_byte_exact_and_extract() {
+fn native_fixtures_repack_extract_and_match_dz_bytes() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/native");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -24,13 +26,14 @@ fn native_fixtures_repack_byte_exact_and_extract() {
     std::fs::create_dir_all(&packed).unwrap();
     std::fs::create_dir_all(&unpacked).unwrap();
 
-    for (dcl, archives) in [
-        ("codecs.dcl", &["codecs.dz", "codecs-1.dz"][..]),
+    for (dcl, archives, byte_exact) in [
+        ("codecs.dcl", &["codecs.dz", "codecs-1.dz"][..], false),
         (
             "ranges.dcl",
             &["ranges.dz", "ranges-1.dz", "ranges-2.dz"][..],
+            true,
         ),
-        ("tiny.dcl", &["tiny.dz"][..]),
+        ("tiny.dcl", &["tiny.dz"][..], true),
     ] {
         run([
             "build",
@@ -39,9 +42,35 @@ fn native_fixtures_repack_byte_exact_and_extract() {
             packed.to_str().unwrap(),
         ]);
         for archive in archives {
-            assert_same(&fixtures.join(archive), &packed.join(archive));
+            assert!(packed.join(archive).is_file(), "missing {archive}");
+            if byte_exact {
+                assert_same(&fixtures.join(archive), &packed.join(archive));
+            }
         }
     }
+
+    let original_dz = native_dz_payloads(&fixtures.join("codecs.dz"));
+    let rebuilt_dz = native_dz_payloads(&packed.join("codecs.dz"));
+    assert!(
+        original_dz
+            .iter()
+            .any(|(_, flags, _)| flags & CHUNK_DZ != 0),
+        "fixture must contain ordinary DZ streams"
+    );
+    assert!(
+        original_dz
+            .iter()
+            .any(|(_, flags, _)| flags & CHUNK_COMBUF != 0),
+        "fixture must contain a COMBUF stream; DZ signatures: {:?}",
+        original_dz
+            .iter()
+            .map(|(index, flags, bytes)| (*index, *flags, bytes.len()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        original_dz, rebuilt_dz,
+        "all DZ streams and COMBUF records must match dzip.exe byte for byte"
+    );
 
     run(["list", packed.join("codecs.dz").to_str().unwrap()]);
     let codecs_unpacked = unpacked.join("codecs");
@@ -551,4 +580,47 @@ fn assert_same(expected: &Path, actual: &Path) {
         "{}",
         expected.display()
     );
+}
+
+fn native_dz_payloads(main_path: &Path) -> Vec<(usize, u16, Vec<u8>)> {
+    let mut reader = DzipReader::new(std::fs::File::open(main_path).unwrap());
+    let archive = reader.read_archive_settings().unwrap();
+    reader
+        .read_strings((archive.num_user_files + archive.num_directories - 1) as usize)
+        .unwrap();
+    reader
+        .read_file_chunk_map(archive.num_user_files as usize)
+        .unwrap();
+    let chunk_settings = reader.read_chunk_settings().unwrap();
+    let mut chunks = reader
+        .read_chunks(chunk_settings.num_chunks as usize)
+        .unwrap();
+    let volume_names = reader
+        .read_file_list(chunk_settings.num_archive_files.saturating_sub(1) as usize)
+        .unwrap();
+
+    let root = main_path.parent().unwrap();
+    let mut volume_paths = vec![main_path.to_path_buf()];
+    volume_paths.extend(volume_names.iter().map(|name| root.join(name)));
+    let file_sizes: HashMap<u16, u64> = volume_paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (index as u16, std::fs::metadata(path).unwrap().len()))
+        .collect();
+    correct_chunk_sizes(&mut chunks, &file_sizes);
+
+    chunks
+        .iter()
+        .enumerate()
+        .filter(|(_, chunk)| chunk.flags & (CHUNK_DZ | CHUNK_COMBUF) != 0)
+        .map(|(index, chunk)| {
+            let mut volume = std::fs::File::open(&volume_paths[usize::from(chunk.file)]).unwrap();
+            volume
+                .seek(std::io::SeekFrom::Start(u64::from(chunk.offset)))
+                .unwrap();
+            let mut payload = vec![0; chunk.compressed_length as usize];
+            volume.read_exact(&mut payload).unwrap();
+            (index, chunk.flags, payload)
+        })
+        .collect()
 }
