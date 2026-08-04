@@ -123,8 +123,8 @@ dzip-cli create game_data.dz Data/config.bin Images/logo.png \
   --dir assets --type zlib --output rebuilt
 ```
 
-The CLI is defined entirely with Clap derive. `build` accepts TOML manifests
-and the legacy `dzip.exe` `.dcl` syntax, while `create` provides a typed direct
+The CLI is defined entirely with Clap derive. `build` accepts the legacy
+`dzip.exe` `.dcl` syntax, while `create` provides a typed direct
 creation workflow without the original executable's order-dependent argument
 state. `extract` writes files only; it does not generate a repack manifest.
 
@@ -198,7 +198,7 @@ also perform their own integrity or certificate checks.
 `dzip-cli extract` intentionally writes files only and does not preserve a
 lossless repack manifest. Recreating an archive from that directory may change
 entry order, flags, ranges, compression methods, COMBUF layout, or split-volume
-layout. Use a reviewed TOML/DCL build configuration when those details matter,
+layout. Use a reviewed DCL build configuration when those details matter,
 and test the finished APK on a clean installation before distribution.
 
 ## GUI
@@ -252,7 +252,7 @@ crates/
 │       ├── extract.rs    Safe filesystem extraction
 │       ├── codec/        Unified codec and chunk-flag façade
 │       └── format/       On-disk structures and constants
-├── dzip-cli/             CLI and manifest adapter
+├── dzip-cli/             CLI and DCL compatibility frontend
 ├── dzip-gui/             Dioxus desktop and WebAssembly archive manager
 ├── dzip-worker/          Browser Worker runtime for archive operations
 └── codecs/

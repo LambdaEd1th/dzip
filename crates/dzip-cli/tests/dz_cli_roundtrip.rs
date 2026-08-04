@@ -153,22 +153,14 @@ fn lzma_chunk_table_matches_dzip_original() {
     let original = b"dzip lzma compatibility payload\n".repeat(1024);
     std::fs::write(root.join("payload.bin"), &original).unwrap();
     std::fs::write(
-        root.join("pack.toml"),
-        r#"
-archives = ["lzma.dz"]
-base_dir = "."
-
-[[files]]
-path = "payload.bin"
-archive_file_index = 0
-compression = "Lzma"
-"#,
+        root.join("pack.dcl"),
+        "archive lzma.dz\nbasedir .\nfile payload.bin 0 lzma\n",
     )
     .unwrap();
 
     run([
         "build",
-        root.join("pack.toml").to_str().unwrap(),
+        root.join("pack.dcl").to_str().unwrap(),
         "--output",
         packed.to_str().unwrap(),
     ]);
@@ -231,32 +223,14 @@ fn framed_codec_chunk_lengths_match_dzip_original() {
         std::fs::write(root.join(name), &original).unwrap();
     }
     std::fs::write(
-        root.join("pack.toml"),
-        r#"
-archives = ["codecs.dz"]
-base_dir = "."
-
-[[files]]
-path = "zlib.bin"
-archive_file_index = 0
-compression = "Zlib"
-
-[[files]]
-path = "bzip.bin"
-archive_file_index = 0
-compression = "Bzip"
-
-[[files]]
-path = "lzma.bin"
-archive_file_index = 0
-compression = "Lzma"
-"#,
+        root.join("pack.dcl"),
+        "archive codecs.dz\nbasedir .\nfile zlib.bin 0 zlib\nfile bzip.bin 0 bzip\nfile lzma.bin 0 lzma\n",
     )
     .unwrap();
 
     run([
         "build",
-        root.join("pack.toml").to_str().unwrap(),
+        root.join("pack.dcl").to_str().unwrap(),
         "--output",
         packed.to_str().unwrap(),
     ]);
@@ -307,27 +281,14 @@ fn directory_ids_are_case_insensitive_like_dzip_original() {
     std::fs::write(root.join("Foo/a.bin"), b"a").unwrap();
     std::fs::write(root.join("foo/b.bin"), b"b").unwrap();
     std::fs::write(
-        root.join("pack.toml"),
-        r#"
-archives = ["case.dz"]
-base_dir = "."
-
-[[files]]
-path = "Foo/a.bin"
-archive_file_index = 0
-compression = "Copy"
-
-[[files]]
-path = "foo/b.bin"
-archive_file_index = 0
-compression = "Copy"
-"#,
+        root.join("pack.dcl"),
+        "archive case.dz\nbasedir .\nfile Foo/a.bin 0 copy\nfile foo/b.bin 0 copy\n",
     )
     .unwrap();
 
     run([
         "build",
-        root.join("pack.toml").to_str().unwrap(),
+        root.join("pack.dcl").to_str().unwrap(),
         "--output",
         packed.to_str().unwrap(),
     ]);
@@ -370,36 +331,14 @@ fn combuf_is_written_before_dz_chunks() {
         std::fs::write(root.join(name), original).unwrap();
     }
     std::fs::write(
-        root.join("pack.toml"),
-        r#"
-archives = ["combuf.dz"]
-base_dir = "."
-
-[options]
-use_combuf = true
-preprocess = false
-
-[[files]]
-path = "a.bin"
-archive_file_index = 0
-compression = "Dz"
-
-[[files]]
-path = "b.bin"
-archive_file_index = 0
-compression = "Dz"
-
-[[files]]
-path = "c.bin"
-archive_file_index = 0
-compression = "Dz"
-"#,
+        root.join("pack.dcl"),
+        "archive combuf.dz\nbasedir .\noptions dz\nuse_combuf 1\npreprocess 0\nfile a.bin 0 dz\nfile b.bin 0 dz\nfile c.bin 0 dz\n",
     )
     .unwrap();
 
     run([
         "build",
-        root.join("pack.toml").to_str().unwrap(),
+        root.join("pack.dcl").to_str().unwrap(),
         "--output",
         packed.to_str().unwrap(),
     ]);
