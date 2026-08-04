@@ -135,72 +135,6 @@ blocks, and repeatable `-c`/`--command` overrides. Compatibility parsing keeps
 the original case-insensitive and permissive numeric behavior; unsafe archive
 entry traversal and recursive include cycles are still rejected.
 
-## Replacing a `.dz` file in an Android APK
-
-Only modify an APK that you own or are authorized to redistribute. An APK is a
-ZIP archive, but changing any entry invalidates its existing signature. The
-replacement must therefore happen before the final alignment and signing
-steps.
-
-The example below uses Bash, 7-Zip, and the Android SDK Build Tools. First
-find the exact archive path and validate the replacement Dzip file:
-
-```bash
-7z l ./original.apk | grep -Ei '\.dz([[:space:]]|$)'
-
-./target/release/dzip-cli list ./replacement/PvZ.dz
-./target/release/dzip-cli extract ./replacement/PvZ.dz \
-  --output ./replacement-check
-```
-
-Mirror the exact path reported by 7-Zip under a staging directory. Paths and
-file names inside both APK and Dzip archives are case-sensitive on Android. In
-this example the APK entry is `assets/PvZ.dz`:
-
-```bash
-cp ./original.apk ./app-unsigned-unaligned.apk
-mkdir -p ./apk-payload/assets
-cp ./replacement/PvZ.dz ./apk-payload/assets/PvZ.dz
-
-(
-  cd ./apk-payload
-  7z u -tzip -mx=0 ../app-unsigned-unaligned.apk assets/PvZ.dz
-)
-```
-
-The `-mx=0` example keeps the replacement APK entry uncompressed (`Store`), as
-is common for large game assets. Check the original entry with `7z l -slt` and
-preserve its method when required; omit `-mx=0` if the original entry uses
-`Deflate`. If the Dzip archive has auxiliary volumes, mirror and replace every
-volume in the same update.
-
-Finally, align, sign, and verify the result. `zipalign` must run before
-`apksigner`:
-
-```bash
-zipalign -P 16 -f -v 4 \
-  ./app-unsigned-unaligned.apk ./app-aligned.apk
-apksigner sign --ks ./release.jks \
-  --out ./app-patched.apk ./app-aligned.apk
-
-zipalign -c -P 16 -v 4 ./app-patched.apk
-apksigner verify --verbose --print-certs ./app-patched.apk
-```
-
-See the Android documentation for
-[`zipalign`](https://developer.android.com/tools/zipalign) and
-[`apksigner`](https://developer.android.com/tools/apksigner). To install the
-patched APK as an update, it must be signed with the same certificate as the
-installed application. A different certificate requires uninstalling the old
-application first, which normally removes its local data. Some applications
-also perform their own integrity or certificate checks.
-
-`dzip-cli extract` intentionally writes files only and does not preserve a
-lossless repack manifest. Recreating an archive from that directory may change
-entry order, flags, ranges, compression methods, COMBUF layout, or split-volume
-layout. Use a reviewed DCL build configuration when those details matter,
-and test the finished APK on a clean installation before distribution.
-
 ## GUI
 
 `dzip-gui` is a Dioxus archive manager that shares one responsive interface
@@ -269,6 +203,72 @@ The project uses Rust 2024 and has an MSRV of Rust 1.85.
 This workspace is distributed through GitHub Releases rather than crates.io.
 All member crates inherit the workspace version, and a release tag such as
 `v0.4.2` must match that version before the release workflow builds artifacts.
+
+## Replacing a `.dz` file in an Android APK
+
+Only modify an APK that you own or are authorized to redistribute. An APK is a
+ZIP archive, but changing any entry invalidates its existing signature. The
+replacement must therefore happen before the final alignment and signing
+steps.
+
+The example below uses Bash, 7-Zip, and the Android SDK Build Tools. First
+find the exact archive path and validate the replacement Dzip file:
+
+```bash
+7z l ./original.apk | grep -Ei '\.dz([[:space:]]|$)'
+
+./target/release/dzip-cli list ./replacement/PvZ.dz
+./target/release/dzip-cli extract ./replacement/PvZ.dz \
+  --output ./replacement-check
+```
+
+Mirror the exact path reported by 7-Zip under a staging directory. Paths and
+file names inside both APK and Dzip archives are case-sensitive on Android. In
+this example the APK entry is `assets/PvZ.dz`:
+
+```bash
+cp ./original.apk ./app-unsigned-unaligned.apk
+mkdir -p ./apk-payload/assets
+cp ./replacement/PvZ.dz ./apk-payload/assets/PvZ.dz
+
+(
+  cd ./apk-payload
+  7z u -tzip -mx=0 ../app-unsigned-unaligned.apk assets/PvZ.dz
+)
+```
+
+The `-mx=0` example keeps the replacement APK entry uncompressed (`Store`), as
+is common for large game assets. Check the original entry with `7z l -slt` and
+preserve its method when required; omit `-mx=0` if the original entry uses
+`Deflate`. If the Dzip archive has auxiliary volumes, mirror and replace every
+volume in the same update.
+
+Finally, align, sign, and verify the result. `zipalign` must run before
+`apksigner`:
+
+```bash
+zipalign -P 16 -f -v 4 \
+  ./app-unsigned-unaligned.apk ./app-aligned.apk
+apksigner sign --ks ./release.jks \
+  --out ./app-patched.apk ./app-aligned.apk
+
+zipalign -c -P 16 -v 4 ./app-patched.apk
+apksigner verify --verbose --print-certs ./app-patched.apk
+```
+
+See the Android documentation for
+[`zipalign`](https://developer.android.com/tools/zipalign) and
+[`apksigner`](https://developer.android.com/tools/apksigner). To install the
+patched APK as an update, it must be signed with the same certificate as the
+installed application. A different certificate requires uninstalling the old
+application first, which normally removes its local data. Some applications
+also perform their own integrity or certificate checks.
+
+`dzip-cli extract` intentionally writes files only and does not preserve a
+lossless repack manifest. Recreating an archive from that directory may change
+entry order, flags, ranges, compression methods, COMBUF layout, or split-volume
+layout. Use a reviewed DCL build configuration when those details matter,
+and test the finished APK on a clean installation before distribution.
 
 ## License
 
