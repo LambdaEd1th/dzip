@@ -223,13 +223,12 @@ jobs:
       - name: Build WASM site
         run: |
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          cd crates/dzip-gui
           RUSTUP_TOOLCHAIN=stable dx build \
+            --package dzip-gui \
             --platform web \
             --release \
             --debug-symbols=false \
             --base-path "/${REPO_NAME}/"
-          cd ../..
           touch "${WEB_DIST}/.nojekyll"
 
       - name: Package web artifact

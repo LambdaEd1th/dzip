@@ -187,8 +187,7 @@ cargo install wasm-pack --version 0.15.0 --locked
 Then start the desktop app:
 
 ```bash
-cd crates/dzip-gui
-dx serve --desktop
+dx serve --package dzip-gui --platform desktop
 ```
 
 Start the WebAssembly version:
@@ -200,8 +199,7 @@ wasm-pack build crates/dzip-worker \
   --no-opt \
   --out-dir ../dzip-gui/assets/worker/pkg \
   --out-name dzip_gui_worker
-cd crates/dzip-gui
-dx serve --platform web
+dx serve --package dzip-gui --platform web
 ```
 
 The desktop build saves archives with the native file dialog and extracts to a
@@ -215,7 +213,7 @@ The web build processes files entirely in WebAssembly, downloads created `.dz`
 archives directly, and bundles extracted entries into a browser-friendly ZIP
 download. Select the main `.dz` file and its auxiliary volumes together when
 opening a split archive. Run the `wasm-pack build` command above before a manual
-`dx build --platform web`.
+`dx build --package dzip-gui --platform web` from the workspace root.
 
 ## Workspace
 

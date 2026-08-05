@@ -181,5 +181,4 @@ jobs:
           rm -f crates/dzip-gui/assets/worker/pkg/.gitignore
 
       - name: Build web
-        working-directory: crates/dzip-gui
-        run: RUSTUP_TOOLCHAIN=stable dx build --platform web --release --debug-symbols=false
+        run: RUSTUP_TOOLCHAIN=stable dx build --package dzip-gui --platform web --release --debug-symbols=false
