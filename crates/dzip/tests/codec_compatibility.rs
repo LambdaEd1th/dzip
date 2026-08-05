@@ -1,4 +1,6 @@
 use dzip::format::Chunk;
+#[cfg(all(windows, target_arch = "x86_64"))]
+use dzip::format::{CHUNK_DZ, CHUNK_ZLIB};
 use dzip::reader::DzipReader;
 use dzip::writer::compress_data;
 use dzip::{Archive, Compression};
@@ -182,6 +184,98 @@ fn reference_dzip_exe_extracts_new_zlib_and_lzma_streams() {
             data
         );
     }
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn reference_combined_flags_preserve_registered_order_and_dz_asymmetry() {
+    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../reference/dzip/dzip.exe");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "dzip-rs-reference-combined-flags-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let data = b"combined zlib and dz flags".repeat(4096);
+    std::fs::write(root.join("payload.bin"), &data).unwrap();
+    std::fs::write(
+        root.join("combined.dcl"),
+        "archive combined.dz\nbasedir .\nfile payload.bin 1 zlib dz\n",
+    )
+    .unwrap();
+
+    let packed = Command::new(&reference)
+        .current_dir(&root)
+        .args(["-q", "combined.dcl"])
+        .output()
+        .unwrap();
+    assert!(
+        packed.status.success(),
+        "reference dzip failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&packed.stdout),
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let mut reader = DzipReader::new(std::fs::File::open(root.join("combined.dz")).unwrap());
+    let settings = reader.read_archive_settings().unwrap();
+    let string_count =
+        usize::from(settings.num_user_files) + usize::from(settings.num_directories) - 1;
+    reader.read_raw_strings(string_count).unwrap();
+    reader
+        .read_file_chunk_map(usize::from(settings.num_user_files))
+        .unwrap();
+    let chunk_settings = reader.read_chunk_settings().unwrap();
+    let chunks = reader
+        .read_chunks(usize::from(chunk_settings.num_chunks))
+        .unwrap();
+    reader
+        .read_raw_file_list(usize::from(
+            chunk_settings.num_archive_files.saturating_sub(1),
+        ))
+        .unwrap();
+    let metadata_end = reader.position().unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].flags, CHUNK_ZLIB | CHUNK_DZ);
+    assert_eq!(u64::from(chunks[0].offset), metadata_end);
+
+    let extracted = Command::new(&reference)
+        .current_dir(&root)
+        .args(["-q", "-d", "combined.dz"])
+        .output()
+        .unwrap();
+    assert!(!extracted.status.success());
+    assert!(!root.join("combined").join("payload.bin").exists());
+
+    std::fs::write(
+        root.join("combined-lzma.dcl"),
+        "archive combined-lzma.dz\nbasedir .\nfile payload.bin 1 zlib lzma\n",
+    )
+    .unwrap();
+    let packed = Command::new(&reference)
+        .current_dir(&root)
+        .args(["-q", "combined-lzma.dcl"])
+        .output()
+        .unwrap();
+    assert!(packed.status.success());
+    let extracted = Command::new(&reference)
+        .current_dir(&root)
+        .args(["-q", "-d", "combined-lzma.dz"])
+        .output()
+        .unwrap();
+    let extracted_payload = std::fs::read(root.join("combined-lzma").join("payload.bin")).ok();
+    assert!(
+        extracted.status.success(),
+        "reference dzip failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&extracted.stdout),
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    assert_eq!(extracted_payload.as_deref(), Some(data.as_slice()));
+    let mut archive = Archive::open_path(root.join("combined-lzma.dz")).unwrap();
+    assert_eq!(archive.read_entry_by_path("payload.bin").unwrap(), data);
 
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -45,7 +45,11 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(mut options: DecoderOptions<'a>) -> Result<Self> {
+    pub fn new(options: DecoderOptions<'a>) -> Result<Self> {
+        Self::with_output(options, Vec::new())
+    }
+
+    pub fn with_output(mut options: DecoderOptions<'a>, mut output: Vec<u8>) -> Result<Self> {
         options.settings = options.settings.validate()?;
         if options.expected_size > options.limits.max_output_size {
             return Err(DzError::output_limit(
@@ -54,10 +58,8 @@ impl<'a> Decoder<'a> {
         }
         let workspace = model_workspace_size(options.settings, options.common_buffer.is_some())?;
         check_workspace(workspace, options.limits.max_workspace_size)?;
-        Ok(Self {
-            options,
-            output: Vec::new(),
-        })
+        output.clear();
+        Ok(Self { options, output })
     }
 
     pub fn decode<'b>(&'b mut self, input: &[u8]) -> Result<&'b [u8]> {

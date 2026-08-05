@@ -6,13 +6,19 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
     bzip::encode_default(input).map_err(codec_engine_error)
 }
 
-pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) -> Result<Vec<u8>> {
+pub(crate) fn decode_with_buffer(
+    input: &[u8],
+    expected_length: usize,
+    limits: CodecLimits,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
     if input.is_empty() && expected_length == 0 {
-        return Ok(Vec::new());
+        let mut output = output;
+        output.clear();
+        return Ok(output);
     }
-    bzip::decode(
-        input,
-        &bzip::DecoderOptions {
+    let mut decoder = bzip::Decoder::with_output(
+        bzip::DecoderOptions {
             expected_size: expected_length,
             limits: bzip::ResourceLimits {
                 max_input_size: limits.max_input_size,
@@ -20,8 +26,11 @@ pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) 
                 max_workspace_size: limits.max_workspace_size,
             },
         },
+        output,
     )
-    .map_err(codec_engine_error)
+    .map_err(codec_engine_error)?;
+    decoder.decode(input).map_err(codec_engine_error)?;
+    Ok(decoder.take_output())
 }
 
 fn codec_error(message: &str) -> crate::DzipError {

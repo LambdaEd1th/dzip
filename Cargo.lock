@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "bzip"
-version = "0.4.2"
+version = "0.4.3"
 
 [[package]]
 name = "cairo-rs"
@@ -1677,11 +1677,11 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dz"
-version = "0.4.2"
+version = "0.4.3"
 
 [[package]]
 name = "dzip"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "byteorder",
  "bzip",
@@ -1695,21 +1695,31 @@ dependencies = [
 
 [[package]]
 name = "dzip-cli"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "dzip",
+ "dzip-dcl",
+ "dzip-workflow",
  "env_logger",
  "log",
 ]
 
 [[package]]
-name = "dzip-gui"
-version = "0.4.2"
+name = "dzip-dcl"
+version = "0.4.3"
 dependencies = [
- "crc32fast",
+ "dzip",
+ "log",
+]
+
+[[package]]
+name = "dzip-gui"
+version = "0.4.3"
+dependencies = [
  "dioxus",
  "dzip",
+ "dzip-workflow",
  "fluent-bundle",
  "futures-timer",
  "js-sys",
@@ -1727,12 +1737,23 @@ dependencies = [
 
 [[package]]
 name = "dzip-gui-worker"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "console_error_panic_hook",
- "dzip-gui",
+ "dzip-workflow",
  "serde-wasm-bindgen",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "dzip-workflow"
+version = "0.4.3"
+dependencies = [
+ "crc32fast",
+ "dzip",
+ "dzip-dcl",
+ "serde",
+ "serde_bytes",
 ]
 
 [[package]]
@@ -3249,7 +3270,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lzma"
-version = "0.4.2"
+version = "0.4.3"
 
 [[package]]
 name = "mac"
@@ -6895,7 +6916,7 @@ dependencies = [
 
 [[package]]
 name = "zlib"
-version = "0.4.2"
+version = "0.4.3"
 
 [[package]]
 name = "zmij"

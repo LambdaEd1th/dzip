@@ -1,11 +1,11 @@
 //! Low-level binary-format API for inspection and reverse-engineering tools.
 //!
-//! Most applications should use [`crate::Archive`] and
-//! [`crate::ArchiveBuilder`] instead.
+//! Most applications should use `Archive` and `ArchiveBuilder` instead.
 
 pub use crate::format::{
-    ArchiveSettings, CHUNK_BZIP, CHUNK_COMBUF, CHUNK_COPYCOMP, CHUNK_DZ, CHUNK_JPEG, CHUNK_LZMA,
-    CHUNK_MP3, CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB, Chunk, ChunkSettings, RangeSettings,
+    ArchivePath, ArchiveSettings, ArchiveString, CHUNK_BZIP, CHUNK_COMBUF, CHUNK_COPYCOMP,
+    CHUNK_DZ, CHUNK_JPEG, CHUNK_LZMA, CHUNK_MP3, CHUNK_RANDOMACCESS, CHUNK_ZERO, CHUNK_ZLIB, Chunk,
+    ChunkSettings, RangeSettings, RawArchive, RawFileRecord, ResolvedChunk, resolve_chunk_layout,
 };
 pub use crate::reader::{DzDecodeContext, DzipReader, ReadSeek, VolumeSource, correct_chunk_sizes};
 pub use crate::writer::DzipWriter;

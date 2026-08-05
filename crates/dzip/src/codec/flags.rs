@@ -50,7 +50,7 @@ impl fmt::Display for Codec {
 /// How an archive entry is stored.
 ///
 /// DZ encoder settings are archive-wide and live in
-/// [`crate::PackOptions::dz`]; keeping them out of this per-entry enum avoids
+/// `PackOptions::dz`; keeping them out of this per-entry enum avoids
 /// conflicting COMBUF settings inside one archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -64,6 +64,15 @@ pub enum Compression {
 }
 
 impl Compression {
+    pub const ALL: [Self; 6] = [
+        Self::Dz,
+        Self::Zlib,
+        Self::Bzip,
+        Self::Lzma,
+        Self::Copy,
+        Self::Zero,
+    ];
+
     pub const fn codec(self) -> Option<Codec> {
         match self {
             Self::Copy | Self::Zero => None,
@@ -163,6 +172,7 @@ pub enum ContentHint {
 /// This type intentionally preserves orthogonal Dzip flags instead of
 /// collapsing them into a single codec value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChunkEncoding {
     pub compression: Compression,
     /// Requests retaining the whole decoded chunk for random seeking.
@@ -188,29 +198,33 @@ impl ChunkEncoding {
         | CHUNK_LZMA
         | CHUNK_RANDOMACCESS;
 
-    /// Interpret the storage bits using dzip.exe's packer registration
-    /// order. MP3, JPEG, and random-access are orthogonal metadata and never
-    /// select a codec by themselves.
+    /// Interpret storage bits using dzip.exe's registered coder order. MP3,
+    /// JPEG, and random-access are orthogonal metadata and never select a codec
+    /// by themselves.
     ///
     /// Well-formed chunks contain one storage bit. The precedence only matters
-    /// for legacy `.dcl` input that combined multiple coder keywords.
+    /// for malformed or legacy chunks carrying multiple storage bits.
     pub fn from_flags(flags: u16) -> Result<Self> {
-        let compression = if flags & CHUNK_ZERO != 0 {
-            Compression::Zero
-        } else if flags & CHUNK_BZIP != 0 {
-            Compression::Bzip
-        } else if flags & CHUNK_COPYCOMP != 0 {
-            Compression::Copy
-        } else if flags & CHUNK_ZLIB != 0 {
-            Compression::Zlib
-        } else if flags & CHUNK_LZMA != 0 {
-            Compression::Lzma
-        } else if flags & CHUNK_DZ != 0 {
-            Compression::Dz
-        } else {
+        if !crate::compat::original::semantic_reader_supports_flags(flags) {
             return Err(DzipError::UnsupportedCompression(flags));
-        };
+        }
+        let compression = crate::compat::original::registered_compression(flags)
+            .ok_or(DzipError::UnsupportedCompression(flags))?;
 
+        Ok(Self::with_compression(flags, compression))
+    }
+
+    /// Interpret storage bits using dzip.exe's packer registration order.
+    ///
+    /// The legacy DCL grammar permits multiple coder keywords. dzip.exe keeps
+    /// every bit in the chunk header, but chooses the encoder with this order.
+    pub fn from_packer_flags(flags: u16) -> Result<Self> {
+        let compression = crate::compat::original::registered_compression(flags)
+            .ok_or(DzipError::UnsupportedCompression(flags))?;
+        Ok(Self::with_compression(flags, compression))
+    }
+
+    fn with_compression(flags: u16, compression: Compression) -> Self {
         let content_hint = match (flags & CHUNK_MP3 != 0, flags & CHUNK_JPEG != 0) {
             (true, true) => Some(ContentHint::Mp3AndJpeg),
             (true, false) => Some(ContentHint::Mp3),
@@ -218,13 +232,13 @@ impl ChunkEncoding {
             (false, false) => None,
         };
 
-        Ok(Self {
+        Self {
             compression,
             random_access: flags & CHUNK_RANDOMACCESS != 0,
             common_buffer: flags & CHUNK_COMBUF != 0,
             content_hint,
             unknown_flags: flags & !Self::KNOWN_FLAGS,
-        })
+        }
     }
 
     pub const fn to_flags(self) -> u16 {
@@ -250,25 +264,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn storage_flags_round_trip_with_orthogonal_metadata() {
+    fn reader_flags_round_trip_with_supported_metadata() {
         for flags in [
             CHUNK_COPYCOMP,
-            CHUNK_COPYCOMP | CHUNK_RANDOMACCESS | CHUNK_MP3,
-            CHUNK_COPYCOMP | CHUNK_MP3 | CHUNK_JPEG,
             CHUNK_ZLIB | CHUNK_RANDOMACCESS,
-            CHUNK_ZLIB | CHUNK_JPEG,
             CHUNK_BZIP,
             CHUNK_LZMA,
-            CHUNK_DZ | CHUNK_MP3,
             CHUNK_ZERO,
-            CHUNK_ZLIB | 0x8000,
         ] {
             assert_eq!(ChunkEncoding::from_flags(flags).unwrap().to_flags(), flags);
         }
     }
 
     #[test]
-    fn media_and_random_access_flags_do_not_select_copy() {
+    fn media_hints_remain_decodable_packer_extensions() {
         let dz_mp3 = ChunkEncoding::from_flags(CHUNK_DZ | CHUNK_MP3).unwrap();
         assert_eq!(dz_mp3.compression, Compression::Dz);
         assert_eq!(dz_mp3.content_hint, Some(ContentHint::Mp3));
@@ -278,6 +287,7 @@ mod tests {
         assert_eq!(zlib_jpeg.compression, Compression::Zlib);
         assert_eq!(zlib_jpeg.content_hint, Some(ContentHint::Jpeg));
         assert!(zlib_jpeg.random_access);
+        assert!(ChunkEncoding::from_flags(CHUNK_ZLIB | 0x8000).is_err());
     }
 
     #[test]
@@ -296,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_storage_flags_use_original_packer_order() {
+    fn combined_storage_flags_use_original_registered_coder_order() {
         let flags = CHUNK_ZERO | CHUNK_BZIP | CHUNK_COPYCOMP | CHUNK_ZLIB | CHUNK_LZMA | CHUNK_DZ;
         assert_eq!(
             ChunkEncoding::from_flags(flags).unwrap().compression,
@@ -322,6 +332,41 @@ mod tests {
         );
         assert_eq!(
             ChunkEncoding::from_flags(
+                flags & !(CHUNK_ZERO | CHUNK_BZIP | CHUNK_COPYCOMP | CHUNK_ZLIB)
+            )
+            .unwrap()
+            .compression,
+            Compression::Lzma
+        );
+    }
+
+    #[test]
+    fn combined_storage_flags_use_original_packer_order() {
+        let flags = CHUNK_ZERO | CHUNK_BZIP | CHUNK_COPYCOMP | CHUNK_ZLIB | CHUNK_LZMA | CHUNK_DZ;
+        assert_eq!(
+            ChunkEncoding::from_packer_flags(flags).unwrap().compression,
+            Compression::Zero
+        );
+        assert_eq!(
+            ChunkEncoding::from_packer_flags(flags & !CHUNK_ZERO)
+                .unwrap()
+                .compression,
+            Compression::Bzip
+        );
+        assert_eq!(
+            ChunkEncoding::from_packer_flags(flags & !(CHUNK_ZERO | CHUNK_BZIP))
+                .unwrap()
+                .compression,
+            Compression::Copy
+        );
+        assert_eq!(
+            ChunkEncoding::from_packer_flags(flags & !(CHUNK_ZERO | CHUNK_BZIP | CHUNK_COPYCOMP))
+                .unwrap()
+                .compression,
+            Compression::Zlib
+        );
+        assert_eq!(
+            ChunkEncoding::from_packer_flags(
                 flags & !(CHUNK_ZERO | CHUNK_BZIP | CHUNK_COPYCOMP | CHUNK_ZLIB)
             )
             .unwrap()

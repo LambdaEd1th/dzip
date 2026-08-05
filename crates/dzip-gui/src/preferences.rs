@@ -53,6 +53,47 @@ pub fn save_archive_preferences(value: &ArchivePreferences) -> Result<(), String
     save_preference(ARCHIVE_PREFERENCES_KEY, &value)
 }
 
+/// Persist editor preferences without blocking a render/input event.
+#[cfg(feature = "desktop")]
+pub fn queue_archive_preferences(value: ArchivePreferences) -> Result<(), String> {
+    use std::sync::{OnceLock, mpsc};
+    use std::time::Duration;
+
+    static WRITER: OnceLock<mpsc::Sender<ArchivePreferences>> = OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<ArchivePreferences>();
+        std::thread::Builder::new()
+            .name("dzip-preference-writer".to_string())
+            .spawn(move || {
+                while let Ok(mut pending) = receiver.recv() {
+                    loop {
+                        match receiver.recv_timeout(Duration::from_millis(250)) {
+                            Ok(latest) => pending = latest,
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                let _ = save_archive_preferences(&pending);
+                                return;
+                            }
+                        }
+                    }
+                    if let Err(error) = save_archive_preferences(&pending) {
+                        log::error!(target: "dzip_gui::preferences", "{error}");
+                    }
+                }
+            })
+            .expect("failed to start preference writer");
+        sender
+    });
+    writer
+        .send(value)
+        .map_err(|_| "preference writer is unavailable".to_string())
+}
+
+#[cfg(feature = "web")]
+pub fn queue_archive_preferences(value: ArchivePreferences) -> Result<(), String> {
+    save_archive_preferences(&value)
+}
+
 fn decode_archive_preferences(value: &str) -> Option<ArchivePreferences> {
     serde_json::from_str(value)
         .ok()
@@ -64,40 +105,7 @@ fn sanitize_archive_preferences(mut value: ArchivePreferences) -> ArchivePrefere
     if !matches!(value.alignment, 0 | 512 | 2048 | 4096) {
         value.alignment = defaults.alignment;
     }
-    let options = &mut value.dz_options;
-    let default_options = defaults.dz_options;
-    if options.win_size > 30 {
-        options.win_size = default_options.win_size;
-    }
-    if !(1..=15).contains(&options.offset_table_size) {
-        options.offset_table_size = default_options.offset_table_size;
-    }
-    if options.offset_tables == 0 {
-        options.offset_tables = default_options.offset_tables;
-    }
-    if !(1..=8).contains(&options.offset_contexts) {
-        options.offset_contexts = default_options.offset_contexts;
-    }
-
-    let minimum_reference_value = u8::from(options.use_combuf);
-    if !(minimum_reference_value..=15).contains(&options.ref_length_table_size) {
-        options.ref_length_table_size = default_options.ref_length_table_size;
-    }
-    if options.ref_length_tables < minimum_reference_value {
-        options.ref_length_tables = default_options.ref_length_tables;
-    }
-    if !(minimum_reference_value..=15).contains(&options.ref_offset_table_size) {
-        options.ref_offset_table_size = default_options.ref_offset_table_size;
-    }
-    if options.ref_offset_tables < minimum_reference_value {
-        options.ref_offset_tables = default_options.ref_offset_tables;
-    }
-    if options.big_min_match < minimum_reference_value {
-        options.big_min_match = default_options.big_min_match;
-    }
-    if options.use_combuf {
-        options.combuf_static_tables = true;
-    }
+    value.dz_options = value.dz_options.sanitized();
 
     value
 }

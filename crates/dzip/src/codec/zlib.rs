@@ -24,9 +24,16 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
 
 /// Accepts both dzip's truncated-gzip framing and ordinary RFC 1950 zlib
 /// streams, matching the two paths in the original decoder.
-pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) -> Result<Vec<u8>> {
+pub(crate) fn decode_with_buffer(
+    input: &[u8],
+    expected_length: usize,
+    limits: CodecLimits,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
     if input.is_empty() && expected_length == 0 {
-        return Ok(Vec::new());
+        let mut output = output;
+        output.clear();
+        return Ok(output);
     }
     if input.starts_with(&[0x1f, 0x8b]) {
         let payload = &input[gzip_payload_offset(input)?..];
@@ -35,9 +42,16 @@ pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) 
             expected_length,
             zlib::StreamFormat::RawDeflate,
             limits,
+            output,
         )
     } else {
-        decode_engine(input, expected_length, zlib::StreamFormat::Zlib, limits)
+        decode_engine(
+            input,
+            expected_length,
+            zlib::StreamFormat::Zlib,
+            limits,
+            output,
+        )
     }
 }
 
@@ -46,10 +60,10 @@ fn decode_engine(
     expected_length: usize,
     format: zlib::StreamFormat,
     limits: CodecLimits,
+    output: Vec<u8>,
 ) -> Result<Vec<u8>> {
-    zlib::decode(
-        input,
-        &zlib::DecoderOptions {
+    let mut decoder = zlib::Decoder::with_output(
+        zlib::DecoderOptions {
             format,
             expected_size: expected_length,
             limits: zlib::ResourceLimits {
@@ -58,8 +72,11 @@ fn decode_engine(
                 max_workspace_size: limits.max_workspace_size,
             },
         },
+        output,
     )
-    .map_err(codec_engine_error)
+    .map_err(codec_engine_error)?;
+    decoder.decode(input).map_err(codec_engine_error)?;
+    Ok(decoder.take_output())
 }
 
 fn codec_engine_error(error: zlib::Error) -> crate::DzipError {

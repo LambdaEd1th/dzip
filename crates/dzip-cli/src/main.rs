@@ -4,7 +4,6 @@ use dzip::{Compression, ContentHint};
 use log::info;
 
 mod commands;
-mod config;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]

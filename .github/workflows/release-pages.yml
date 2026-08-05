@@ -211,18 +211,24 @@ jobs:
         run: cargo +stable install wasm-pack --version 0.15.0 --locked
 
       - name: Build web worker
-        run: ./scripts/build-web-worker.sh
+        run: |
+          wasm-pack build crates/dzip-worker \
+            --target web \
+            --release \
+            --no-opt \
+            --out-dir ../dzip-gui/assets/worker/pkg \
+            --out-name dzip_gui_worker
+          rm -f crates/dzip-gui/assets/worker/pkg/.gitignore
 
       - name: Build WASM site
         run: |
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          cd crates/dzip-gui
           RUSTUP_TOOLCHAIN=stable dx build \
+            --package dzip-gui \
             --platform web \
             --release \
             --debug-symbols=false \
             --base-path "/${REPO_NAME}/"
-          cd ../..
           touch "${WEB_DIST}/.nojekyll"
 
       - name: Package web artifact

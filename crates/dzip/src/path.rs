@@ -1,6 +1,39 @@
 use crate::{DzipError, Result};
 use std::path::{Component, Path, PathBuf};
 
+/// Canonical key for the path rules used by the original Windows tool.
+///
+/// Stored spelling is intentionally kept elsewhere. This key exists only for
+/// comparisons: both separators become `\\` and ASCII case is folded without
+/// applying host-locale or Unicode rules.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArchivePathKey(Vec<u8>);
+
+impl ArchivePathKey {
+    pub fn from_path(path: &Path) -> Self {
+        Self::from_archive_bytes(path.to_string_lossy().as_bytes())
+    }
+
+    pub fn from_archive_str(path: &str) -> Self {
+        Self::from_archive_bytes(path.as_bytes())
+    }
+
+    pub fn from_archive_bytes(path: &[u8]) -> Self {
+        Self(
+            path.iter()
+                .map(|byte| match byte {
+                    b'/' => b'\\',
+                    _ => byte.to_ascii_lowercase(),
+                })
+                .collect(),
+        )
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// Sanitize a path to ensure it is safe for extraction.
 /// prevent Zip Slip attacks by disallowing absolute paths and `..` components.
 pub fn sanitize_path(path: &Path) -> Result<PathBuf> {
@@ -108,6 +141,18 @@ mod tests {
     fn test_to_archive_format() {
         let p = Path::new("folder/file.txt");
         assert_eq!(to_archive_format(p), "folder\\file.txt");
+    }
+
+    #[test]
+    fn archive_path_keys_use_original_windows_comparison_rules() {
+        assert_eq!(
+            ArchivePathKey::from_archive_str("Data/Images/Logo.PNG"),
+            ArchivePathKey::from_archive_str("data\\images\\logo.png")
+        );
+        assert_ne!(
+            ArchivePathKey::from_archive_str("Straße"),
+            ArchivePathKey::from_archive_str("STRASSE")
+        );
     }
 
     #[test]

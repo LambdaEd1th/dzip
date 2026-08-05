@@ -96,7 +96,7 @@ fn test_roundtrip() {
 }
 
 #[test]
-fn rejects_nonzero_version_and_missing_root_directory() {
+fn rejects_nonzero_version_empty_archives_and_missing_root_directory() {
     let mut nonzero_version = Vec::new();
     DzipWriter::new(Cursor::new(&mut nonzero_version))
         .write_archive_settings(&ArchiveSettings {
@@ -111,11 +111,25 @@ fn rejects_nonzero_version_and_missing_root_directory() {
         Err(dzip::DzipError::UnsupportedVersion(1))
     ));
 
+    let mut empty_archive = Vec::new();
+    DzipWriter::new(Cursor::new(&mut empty_archive))
+        .write_archive_settings(&ArchiveSettings {
+            header: 0x5A525444,
+            num_user_files: 0,
+            num_directories: 1,
+            version: 0,
+        })
+        .unwrap();
+    assert!(matches!(
+        DzipReader::new(Cursor::new(empty_archive)).read_archive_settings(),
+        Err(dzip::DzipError::InvalidArchive(_))
+    ));
+
     let mut missing_root = Vec::new();
     DzipWriter::new(Cursor::new(&mut missing_root))
         .write_archive_settings(&ArchiveSettings {
             header: 0x5A525444,
-            num_user_files: 0,
+            num_user_files: 1,
             num_directories: 0,
             version: 0,
         })

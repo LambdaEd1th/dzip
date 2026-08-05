@@ -1,6 +1,5 @@
-use dzip::{
-    ArchiveBuilder, Compression, ContentHint, DzOptions, EntryOptions, PackOptions, Result,
-};
+use dzip::{ChunkEncoding, Compression, ContentHint, Result};
+use dzip_workflow::{BuildEntry, BuildPlan, DzConfig, write_archive_to_directory};
 use log::{debug, info};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -84,14 +83,17 @@ pub fn create_archive(request: CreateRequest<'_>) -> Result<()> {
     } else {
         request.source_dirs.iter().map(PathBuf::from).collect()
     };
-    let mut builder = ArchiveBuilder::with_options(PackOptions {
+    let dz_options = DzConfig {
+        use_combuf: request.use_combuf,
+        ..DzConfig::default()
+    };
+    let mut plan = BuildPlan {
+        archive_name: request.archive.to_string(),
         volume_names: vec![request.archive.to_string()],
         alignment: request.alignment,
-        dz: DzOptions {
-            use_combuf: request.use_combuf,
-            ..DzOptions::default()
-        },
-    });
+        dz_options,
+        entries: Vec::with_capacity(request.files.len()),
+    };
 
     for file in request.files {
         let archive_path = Path::new(file);
@@ -116,22 +118,32 @@ pub fn create_archive(request: CreateRequest<'_>) -> Result<()> {
             )));
         }
 
-        let mut options = EntryOptions::new()
-            .compression(request.compression)
-            .random_access(request.random_access);
-        if let Some(hint) = request.content_hint {
-            options = options.content_hint(hint);
-        }
-        builder.add_bytes(archive_path, bytes[start..end].to_vec(), options)?;
+        plan.entries.push(BuildEntry {
+            path: archive_path.to_string_lossy().into_owned(),
+            bytes: bytes[start..end].to_vec(),
+            encoding: ChunkEncoding {
+                compression: request.compression,
+                random_access: request.random_access,
+                common_buffer: false,
+                content_hint: request.content_hint,
+                unknown_flags: 0,
+            },
+            raw_flags: None,
+            volume: 0,
+        });
         debug!("Added {}", source.display());
     }
 
-    let report = builder.write_to_directory(request.output_dir)?;
+    let report = write_archive_to_directory(plan, request.output_dir).map_err(workflow_error)?;
     info!(
         "Created {} with {} files and {} chunks",
         request.archive, report.entries, report.chunks
     );
     Ok(())
+}
+
+fn workflow_error(error: impl std::fmt::Display) -> dzip::DzipError {
+    invalid_input(error.to_string())
 }
 
 fn read_source(path: &Path, source_dirs: &[PathBuf]) -> Result<(PathBuf, Vec<u8>)> {

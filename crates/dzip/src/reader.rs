@@ -29,6 +29,11 @@ impl<R: Read + Seek> DzipReader<R> {
         if version != 0 {
             return Err(DzipError::UnsupportedVersion(version));
         }
+        if num_user_files == 0 {
+            return Err(DzipError::InvalidArchive(
+                "archive must contain at least one user file".to_string(),
+            ));
+        }
         if num_directories == 0 {
             return Err(DzipError::InvalidArchive(
                 "archive must contain the implicit root directory".to_string(),
@@ -61,12 +66,28 @@ impl<R: Read + Seek> DzipReader<R> {
         max_string_length: usize,
         max_total_length: usize,
     ) -> Result<Vec<String>> {
+        self.read_raw_strings_with_limits(count, max_string_length, max_total_length)?
+            .into_iter()
+            .map(|value| Ok(String::from_utf8(value.into_bytes())?))
+            .collect()
+    }
+
+    pub fn read_raw_strings(&mut self, count: usize) -> Result<Vec<ArchiveString>> {
+        self.read_raw_strings_with_limits(count, usize::MAX - 1, usize::MAX)
+    }
+
+    pub fn read_raw_strings_with_limits(
+        &mut self,
+        count: usize,
+        max_string_length: usize,
+        max_total_length: usize,
+    ) -> Result<Vec<ArchiveString>> {
         let mut strings = Vec::with_capacity(count);
         let mut total_length = 0usize;
         for _ in 0..count {
-            let s = self.read_null_terminated_string(max_string_length)?;
+            let s = self.read_null_terminated_bytes(max_string_length)?;
             total_length = total_length
-                .checked_add(s.len() + 1)
+                .checked_add(s.encoded_len())
                 .ok_or_else(|| DzipError::InvalidArchive("metadata size overflow".to_string()))?;
             if total_length > max_total_length {
                 return Err(DzipError::LimitExceeded {
@@ -80,7 +101,7 @@ impl<R: Read + Seek> DzipReader<R> {
         Ok(strings)
     }
 
-    fn read_null_terminated_string(&mut self, max_length: usize) -> Result<String> {
+    fn read_null_terminated_bytes(&mut self, max_length: usize) -> Result<ArchiveString> {
         let mut bytes = Vec::new();
         let max_with_terminator = max_length.saturating_add(1);
         let read = self
@@ -94,7 +115,7 @@ impl<R: Read + Seek> DzipReader<R> {
             ));
         }
         bytes.pop();
-        Ok(String::from_utf8(bytes)?)
+        Ok(ArchiveString::from_terminated_field(bytes))
     }
 
     /// Reads the User-File to Chunk-And-Directory list.
@@ -209,6 +230,19 @@ impl<R: Read + Seek> DzipReader<R> {
         self.read_strings(num_archive_files)
     }
 
+    pub fn read_raw_file_list(&mut self, num_archive_files: usize) -> Result<Vec<ArchiveString>> {
+        self.read_raw_strings(num_archive_files)
+    }
+
+    pub fn read_raw_file_list_with_limits(
+        &mut self,
+        num_archive_files: usize,
+        max_string_length: usize,
+        max_total_length: usize,
+    ) -> Result<Vec<ArchiveString>> {
+        self.read_raw_strings_with_limits(num_archive_files, max_string_length, max_total_length)
+    }
+
     pub fn position(&mut self) -> std::io::Result<u64> {
         self.reader.stream_position()
     }
@@ -221,11 +255,14 @@ impl<R: Read + Seek> DzipReader<R> {
     }
 
     pub fn read_chunk_data(&mut self, chunk: &Chunk) -> Result<Vec<u8>> {
+        let mut input = Vec::new();
         Self::decompress_chunk_data(
             &mut self.reader,
             chunk,
             None,
             crate::codec::CodecLimits::UNLIMITED,
+            &mut input,
+            Vec::new(),
         )
     }
 
@@ -258,11 +295,31 @@ impl<R: Read + Seek> DzipReader<R> {
         dz_context: Option<&DzDecodeContext>,
         limits: crate::codec::CodecLimits,
     ) -> Result<Vec<u8>> {
+        let mut input = Vec::new();
+        self.read_chunk_data_with_context_and_limits_reusing(
+            chunk,
+            volume_source,
+            dz_context,
+            limits,
+            &mut input,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn read_chunk_data_with_context_and_limits_reusing(
+        &mut self,
+        chunk: &Chunk,
+        volume_source: &mut dyn VolumeSource,
+        dz_context: Option<&DzDecodeContext>,
+        limits: crate::codec::CodecLimits,
+        input: &mut Vec<u8>,
+        output: Vec<u8>,
+    ) -> Result<Vec<u8>> {
         if chunk.file == 0 {
-            Self::decompress_chunk_data(&mut self.reader, chunk, dz_context, limits)
+            Self::decompress_chunk_data(&mut self.reader, chunk, dz_context, limits, input, output)
         } else {
             let reader = volume_source.open_volume(chunk.file)?;
-            Self::decompress_chunk_data(reader, chunk, dz_context, limits)
+            Self::decompress_chunk_data(reader, chunk, dz_context, limits, input, output)
         }
     }
 
@@ -272,14 +329,42 @@ impl<R: Read + Seek> DzipReader<R> {
         settings: RangeSettings,
         volume_source: &mut dyn VolumeSource,
     ) -> Result<DzDecodeContext> {
+        self.load_dz_context_with_limits(
+            chunks,
+            settings,
+            volume_source,
+            crate::codec::CodecLimits::UNLIMITED,
+        )
+    }
+
+    pub fn load_dz_context_with_limits(
+        &mut self,
+        chunks: &[Chunk],
+        settings: RangeSettings,
+        volume_source: &mut dyn VolumeSource,
+        limits: crate::codec::CodecLimits,
+    ) -> Result<DzDecodeContext> {
         let settings = settings.validate()?;
         let common_chunks: Vec<_> = chunks
             .iter()
-            .filter(|chunk| chunk.flags & CHUNK_COMBUF != 0)
+            .filter(|chunk| crate::compat::original::is_dedicated_combuf(chunk.flags))
             .copied()
             .collect();
         if common_chunks.is_empty() {
             return DzDecodeContext::from_encoded_chunks(settings, Vec::new());
+        }
+
+        let retained_bytes = common_chunks.iter().try_fold(0usize, |total, chunk| {
+            total
+                .checked_add(chunk.compressed_length as usize)
+                .ok_or_else(|| DzipError::InvalidArchive("COMBUF size overflow".to_string()))
+        })?;
+        if retained_bytes > limits.max_workspace_size {
+            return Err(DzipError::LimitExceeded {
+                resource: "COMBUF retained bytes",
+                limit: limits.max_workspace_size as u64,
+                actual: retained_bytes as u64,
+            });
         }
 
         let mut encoded_chunks = Vec::with_capacity(common_chunks.len());
@@ -304,12 +389,15 @@ impl<R: Read + Seek> DzipReader<R> {
         chunk: &Chunk,
         dz_context: Option<&DzDecodeContext>,
         limits: crate::codec::CodecLimits,
+        input: &mut Vec<u8>,
+        output: Vec<u8>,
     ) -> Result<Vec<u8>> {
         let encoding = crate::codec::ChunkEncoding::from_flags(chunk.flags)?;
 
         // Zero chunks have no physical stream and may carry a virtual offset.
         if encoding.compression == crate::codec::Compression::Zero {
-            return crate::codec::decode(
+            input.clear();
+            return crate::codec::decode_with_buffer(
                 encoding,
                 &[],
                 crate::codec::DecodeContext {
@@ -317,6 +405,7 @@ impl<R: Read + Seek> DzipReader<R> {
                     dz: dz_context,
                     limits,
                 },
+                output,
             );
         }
 
@@ -325,22 +414,21 @@ impl<R: Read + Seek> DzipReader<R> {
         // ignores the stored compressed-length field. Valid copy chunks have
         // equal lengths, but using the original field preserves compatibility
         // with malformed legacy headers.
-        let stored_length = if encoding.compression == crate::codec::Compression::Copy {
-            chunk.decompressed_length
-        } else {
-            chunk.compressed_length
-        };
-        let mut buffer = vec![0u8; stored_length as usize];
-        reader.read_exact(&mut buffer)?;
+        let stored_length =
+            crate::compat::original::payload_read_length(*chunk, encoding.compression);
+        input.clear();
+        input.resize(stored_length as usize, 0);
+        reader.read_exact(input)?;
 
-        crate::codec::decode(
+        crate::codec::decode_with_buffer(
             encoding,
-            &buffer,
+            input,
             crate::codec::DecodeContext {
                 expected_len: chunk.decompressed_length as usize,
                 dz: dz_context,
                 limits,
             },
+            output,
         )
     }
 }
@@ -373,53 +461,9 @@ pub fn correct_chunk_sizes(
     chunks: &mut [crate::format::Chunk],
     file_sizes: &std::collections::HashMap<u16, u64>,
 ) {
-    use crate::format::*;
-    let mut chunks_by_file: std::collections::HashMap<u16, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (i, chunk) in chunks.iter().enumerate() {
-        // Virtual zero chunks and zero-length COMBUF placeholders occupy no
-        // bytes and must not become a boundary for a physical neighbor at the
-        // same offset.
-        if chunk.flags & CHUNK_ZERO != 0 || chunk.compressed_length == 0 {
-            continue;
-        }
-        chunks_by_file.entry(chunk.file).or_default().push(i);
-    }
-
-    for (file_id, mut indices) in chunks_by_file {
-        indices.sort_by_key(|&i| chunks[i].offset);
-
-        let file_size = *file_sizes.get(&file_id).unwrap_or(&0);
-
-        for i in 0..indices.len() {
-            let idx = indices[i];
-            let chunk_offset = chunks[idx].offset as u64;
-
-            // Determine the limit (end of region)
-            let limit = if i + 1 < indices.len() {
-                chunks[indices[i + 1]].offset as u64
-            } else {
-                file_size
-            };
-
-            let available = limit.saturating_sub(chunk_offset);
-
-            // If header claims more than available, clamp it.
-            // BMS Logic: If SIZE == ZSIZE (equal lengths) for compressed chunks, it means
-            // the size is unknown/placeholder, so we SHOULD use the available size (next offset - current).
-            let is_compressed =
-                (chunks[idx].flags & (CHUNK_LZMA | CHUNK_ZLIB | CHUNK_BZIP | CHUNK_DZ)) != 0;
-            let equal_sizes = chunks[idx].compressed_length == chunks[idx].decompressed_length;
-
-            if is_compressed && equal_sizes {
-                // Always update to available size (whether larger or smaller)
-                if chunks[idx].compressed_length != available as u32 {
-                    chunks[idx].compressed_length = available as u32;
-                }
-            } else if (chunks[idx].compressed_length as u64) > available {
-                chunks[idx].compressed_length = available as u32;
-            }
-        }
+    let resolved = crate::format::resolve_chunk_layout(chunks, file_sizes);
+    for (chunk, resolved) in chunks.iter_mut().zip(resolved) {
+        chunk.compressed_length = resolved.physical_length;
     }
 }
 
@@ -435,10 +479,20 @@ mod tests {
             offset: 0,
             compressed_length: 1,
             decompressed_length: 7,
-            flags: CHUNK_COPYCOMP | CHUNK_JPEG | CHUNK_RANDOMACCESS,
+            flags: CHUNK_COPYCOMP | CHUNK_RANDOMACCESS,
             file: 0,
         };
 
         assert_eq!(reader.read_chunk_data(&chunk).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn raw_string_reader_preserves_non_utf8_metadata_bytes() {
+        let mut reader = DzipReader::new(Cursor::new(vec![0xff, b'a', 0]));
+        let values = reader.read_raw_strings(1).unwrap();
+        assert_eq!(values[0].as_bytes(), &[0xff, b'a']);
+
+        let mut reader = DzipReader::new(Cursor::new(vec![0xff, 0]));
+        assert!(reader.read_strings(1).is_err());
     }
 }

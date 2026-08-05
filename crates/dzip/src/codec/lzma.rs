@@ -32,9 +32,21 @@ pub(crate) fn encode(input: &[u8]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+#[cfg(test)]
 pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) -> Result<Vec<u8>> {
+    decode_with_buffer(input, expected_length, limits, Vec::new())
+}
+
+pub(crate) fn decode_with_buffer(
+    input: &[u8],
+    expected_length: usize,
+    limits: CodecLimits,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
     if input.is_empty() && expected_length == 0 {
-        return Ok(Vec::new());
+        let mut output = output;
+        output.clear();
+        return Ok(output);
     }
     let header = input
         .get(..13)
@@ -57,9 +69,8 @@ pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) 
 
     let options = lzma::DecoderOptions::from_decoder_properties(properties, expected_length)
         .map_err(codec_engine_error)?;
-    lzma::decode(
-        &input[13..],
-        &lzma::DecoderOptions {
+    let mut decoder = lzma::Decoder::with_output(
+        lzma::DecoderOptions {
             limits: lzma::ResourceLimits {
                 max_input_size: limits.max_input_size,
                 max_output_size: limits.max_output_size,
@@ -67,8 +78,11 @@ pub(crate) fn decode(input: &[u8], expected_length: usize, limits: CodecLimits) 
             },
             ..options
         },
+        output,
     )
-    .map_err(codec_engine_error)
+    .map_err(codec_engine_error)?;
+    decoder.decode(&input[13..]).map_err(codec_engine_error)?;
+    Ok(decoder.take_output())
 }
 
 fn codec_engine_error(error: lzma::Error) -> crate::DzipError {

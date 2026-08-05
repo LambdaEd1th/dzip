@@ -50,7 +50,7 @@ jobs:
           cargo +stable test -p dzip-cli --test dz_cli_roundtrip native_fixtures_repack_extract_and_match_dz_bytes
 
       - name: Clippy codecs and integration layer
-        run: cargo +stable clippy -p bzip -p dz -p lzma -p zlib -p dzip -p dzip-cli --all-targets --all-features --no-deps -- -D warnings
+        run: cargo +stable clippy -p bzip -p dz -p lzma -p zlib -p dzip -p dzip-workflow -p dzip-cli --all-targets --all-features --no-deps -- -D warnings
 
   rust:
     name: Rust
@@ -106,7 +106,12 @@ jobs:
           cargo +stable check -p dzip --no-default-features --features encode
           cargo +stable check -p dzip --all-features
           cargo +stable check -p dz --no-default-features
+          cargo +stable check -p dzip-workflow --no-default-features
+          cargo +stable check -p dzip-workflow --no-default-features --features dcl
+          cargo +stable check -p dzip-workflow --no-default-features --features protocol
+          cargo +stable check -p dzip-workflow --all-features
           cargo +stable test -p dzip --no-default-features --features encode --lib
+          cargo +stable test -p dzip-workflow --all-features
           cargo +stable test -p dzip --all-features --doc
 
       - name: Clippy native workspace
@@ -132,6 +137,8 @@ jobs:
           cargo +stable clippy -p dzip --no-default-features --features encode --no-deps -- -D warnings
           cargo +stable clippy -p dz --no-default-features --no-deps -- -D warnings
           cargo +stable clippy -p zlib --no-default-features --no-deps -- -D warnings
+          cargo +stable clippy -p dzip-workflow --no-default-features --no-deps -- -D warnings
+          cargo +stable clippy -p dzip-workflow --all-features --all-targets --no-deps -- -D warnings
 
   web-build:
     name: Web Build
@@ -164,8 +171,14 @@ jobs:
         run: cargo +stable install wasm-pack --version 0.15.0 --locked
 
       - name: Build web worker
-        run: ./scripts/build-web-worker.sh
+        run: |
+          wasm-pack build crates/dzip-worker \
+            --target web \
+            --release \
+            --no-opt \
+            --out-dir ../dzip-gui/assets/worker/pkg \
+            --out-name dzip_gui_worker
+          rm -f crates/dzip-gui/assets/worker/pkg/.gitignore
 
       - name: Build web
-        working-directory: crates/dzip-gui
-        run: RUSTUP_TOOLCHAIN=stable dx build --platform web --release --debug-symbols=false
+        run: RUSTUP_TOOLCHAIN=stable dx build --package dzip-gui --platform web --release --debug-symbols=false
