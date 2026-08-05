@@ -1,0 +1,21 @@
+[package]
+name = "dzip-workflow"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared application workflows for Dzip command-line and graphical frontends"
+
+[dependencies]
+crc32fast.workspace = true
+dzip.workspace = true
+dzip-dcl = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_bytes = { workspace = true, optional = true }
+
+[features]
+default = []
+dcl = ["dep:dzip-dcl"]
+parallel = ["dzip/parallel"]
+protocol = ["dep:serde", "dep:serde_bytes", "dzip/serde"]

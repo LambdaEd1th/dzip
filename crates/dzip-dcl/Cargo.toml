@@ -1,0 +1,12 @@
+[package]
+name = "dzip-dcl"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "dzip.exe-compatible DCL configuration parser"
+
+[dependencies]
+dzip = { path = "../dzip", default-features = false }
+log.workspace = true

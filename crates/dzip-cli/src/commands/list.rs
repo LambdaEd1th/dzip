@@ -18,7 +18,7 @@ pub fn list_archive(input_path: &str, show_output: bool) -> Result<()> {
         let packed: u64 = entry
             .chunk_ids()
             .iter()
-            .filter_map(|id| archive.index().chunks().get(*id as usize))
+            .filter_map(|id| archive.index().chunk(*id as usize))
             .map(|chunk| u64::from(chunk.compressed_length))
             .sum();
         println!(

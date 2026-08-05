@@ -46,7 +46,11 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(mut options: DecoderOptions) -> Result<Self, Error> {
+    pub fn new(options: DecoderOptions) -> Result<Self, Error> {
+        Self::with_output(options, Vec::new())
+    }
+
+    pub fn with_output(mut options: DecoderOptions, mut output: Vec<u8>) -> Result<Self, Error> {
         options.properties = options.properties.validate()?;
         if options.expected_size > options.limits.max_output_size {
             return Err(Error::output_limit(
@@ -56,10 +60,8 @@ impl Decoder {
         let workspace = model_workspace(options.properties)
             .ok_or_else(|| Error::workspace_limit("LZMA workspace estimate overflow"))?;
         check_workspace(workspace, options.limits.max_workspace_size)?;
-        Ok(Self {
-            options,
-            output: Vec::new(),
-        })
+        output.clear();
+        Ok(Self { options, output })
     }
 
     pub fn decode<'a>(&'a mut self, input: &[u8]) -> Result<&'a [u8], Error> {

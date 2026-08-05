@@ -1,4 +1,4 @@
-use dzip_gui::worker_protocol::{ArchiveTask, ArchiveTaskResponse};
+use dzip_workflow::{ArchiveTask, ArchiveTaskResponse, WorkflowErrorCode, WorkflowFailure};
 use js_sys::{Array, ArrayBuffer, Function, Object, Promise, Reflect, Set};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ impl WorkerClient {
             }
         });
         worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-        log::info!(target: "dzip_gui::worker", "Dzip Web Worker pool initialized");
+        log::info!(target: "dzip_gui::worker", "Dzip stateful Web Worker initialized");
 
         Ok(Self {
             worker,
@@ -129,23 +129,26 @@ impl WorkerClient {
     }
 }
 
-pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, String> {
-    let request = serde_wasm_bindgen::to_value(&task).map_err(|error| error.to_string())?;
-    let promise = WORKER_CLIENT.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let recreate = slot.as_ref().is_none_or(|client| client.failed.get());
-        if recreate {
-            if let Some(client) = slot.take() {
-                client.worker.terminate();
+pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, WorkflowFailure> {
+    let request =
+        serde_wasm_bindgen::to_value(&task).map_err(|error| protocol_failure(error.to_string()))?;
+    let promise = WORKER_CLIENT
+        .with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let recreate = slot.as_ref().is_none_or(|client| client.failed.get());
+            if recreate {
+                if let Some(client) = slot.take() {
+                    client.worker.terminate();
+                }
+                *slot = Some(WorkerClient::new()?);
             }
-            *slot = Some(WorkerClient::new()?);
-        }
-        slot.as_mut()
-            .expect("worker client was initialized")
-            .request(request)
-    })?;
-    let response = JsFuture::from(promise).await.map_err(js_error_string)?;
-    serde_wasm_bindgen::from_value(response).map_err(|error| error.to_string())
+            slot.as_mut()
+                .expect("worker client was initialized")
+                .request(request)
+        })
+        .map_err(protocol_failure)?;
+    let response = JsFuture::from(promise).await.map_err(js_error_failure)?;
+    serde_wasm_bindgen::from_value(response).map_err(|error| protocol_failure(error.to_string()))
 }
 
 fn message_id(value: &JsValue) -> Option<u64> {
@@ -222,4 +225,16 @@ fn js_error_string(value: JsValue) -> String {
                 .and_then(|message| message.as_string())
         })
         .unwrap_or_else(|| format!("{value:?}"))
+}
+
+fn js_error_failure(value: JsValue) -> WorkflowFailure {
+    serde_wasm_bindgen::from_value(value.clone())
+        .unwrap_or_else(|_| protocol_failure(js_error_string(value)))
+}
+
+fn protocol_failure(message: impl Into<String>) -> WorkflowFailure {
+    WorkflowFailure {
+        code: WorkflowErrorCode::Io,
+        message: message.into(),
+    }
 }

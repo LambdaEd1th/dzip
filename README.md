@@ -3,8 +3,9 @@
 [![Rust CI](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml)
 
 Pure-Rust support for reading, extracting, creating, and inspecting Dzip
-archives. The workspace contains the reusable `dzip` library and the
-`dzip-cli` command-line application.
+archives. The workspace contains the reusable `dzip` library, shared DCL and
+application-workflow layers, the `dzip-cli` command-line application, and a
+Dioxus desktop/Web archive manager.
 
 The implementation is compatible with `dzip.exe`, including split volumes,
 native DZ compression and COMBUF references, BZip2, LZMA1, and the original
@@ -24,7 +25,7 @@ Add the public crate directly from GitHub (it is not published on crates.io):
 
 ```toml
 [dependencies]
-dzip = { git = "https://github.com/LambdaEd1th/dzip-rs.git", tag = "v0.4.2" }
+dzip = { git = "https://github.com/LambdaEd1th/dzip-rs.git", tag = "v0.4.3" }
 ```
 
 Open, inspect, and extract an archive:
@@ -78,6 +79,23 @@ For split or embedded archives, use `VolumeSource`/`VolumeSink`,
 `MemoryVolumeSource`, and `MemoryVolumeSink`. The lower-level format reader and
 writer remain available for inspection and reverse-engineering tools.
 
+Backends that need the stored auxiliary names before constructing their volume
+provider can use `ArchivePreparation`. It owns the already-parsed main reader,
+exposes lossless metadata, and then opens the semantic `Archive` without parsing
+the header a second time.
+
+For lossless metadata inspection, `RawArchive` preserves nul-terminated name
+bytes and the chunk records exactly as stored. The semantic `ArchiveIndex`
+separates those records from `resolved_chunks()`, whose physical lengths are
+derived from volume layout for decoding. Each `Entry` also exposes `segments()`
+so multi-chunk files retain their per-segment codec, volume, and decoded range.
+This keeps host path validation and UTF-8 conversion out of format-level tools.
+
+`ArchiveImage` retains the main file and every auxiliary volume byte-for-byte.
+Use it when an archive must be inspected, transported, or rewritten without
+decoding and rebuilding its payloads. `ArchiveImage::write_to_path` preserves
+all retained bytes and uses the original auxiliary-volume names.
+
 ### Compatibility and safety
 
 Archives always use the original dzip.exe compatibility behavior: the writer
@@ -85,6 +103,21 @@ reproduces its known physical-length quirks, while the reader repairs those
 fields from the physical chunk layout. `Compression::Zero` follows the original
 behavior and represents the requested length as zero bytes regardless of the
 input contents.
+
+Legacy DCL files may combine multiple storage flags. The library preserves the
+complete flag word and applies dzip.exe's registered-coder priority. It also
+preserves the original edge case where a retained `DZ` bit makes the reader
+expect archive-wide DZ settings even when another encoder won; such an archive
+is rejected by both readers. New code should select exactly one storage method
+unless reproducing a legacy DCL file is required.
+
+Auxiliary volumes are resolved lazily, matching dzip.exe: listing an archive
+does not require every named volume to exist, while reading an entry reports a
+missing volume only if that entry uses it. Archive paths treat both `/` and `\`
+as separators on every host, use ASCII case-insensitive Windows comparison
+rules, and are stored with Windows-style `\` separators.
+DCL syntax is detected from its contents, so the root configuration does not
+need a `.dcl` filename extension.
 
 High-level extraction rejects absolute paths, parent traversal, existing
 symlink parents, and symlink output targets. `ReadLimits` bounds metadata and
@@ -95,7 +128,9 @@ decompressed output when processing untrusted archives.
 - `encode` and `decode` enable the corresponding public workflows.
 - `bzip`, `dz`, `zlib`, and `lzma` select codec engines independently.
 - `all-codecs` enables all four engines and is enabled by default.
-- `parallel` parallelizes source preparation.
+- `parallel` uses bounded parallel batches for independent chunk encoding;
+  archive-scoped DZ input is still processed together to preserve COMBUF
+  behavior.
 - `serde` adds serialization support to public configuration enums.
 
 Archive metadata, `RangeSettings`, `Compression`, and builder options remain
@@ -159,21 +194,28 @@ dx serve --desktop
 Start the WebAssembly version:
 
 ```bash
-./scripts/serve-web.sh
+wasm-pack build crates/dzip-worker \
+  --target web \
+  --release \
+  --no-opt \
+  --out-dir ../dzip-gui/assets/worker/pkg \
+  --out-name dzip_gui_worker
+cd crates/dzip-gui
+dx serve --platform web
 ```
 
 The desktop build saves archives with the native file dialog and extracts to a
-chosen directory. Archive parsing, compression, and extraction run outside the
-Dioxus UI thread: desktop builds use a background thread plus parallel per-file
-codec work, while the browser uses a pool of one to four Web Workers. This keeps
-animations and input responsive during long operations without requiring
-`SharedArrayBuffer` or cross-origin isolation.
+chosen directory. Both frontends use the same typed build plans and stateful
+archive-session service. Desktop builds keep one archive backend thread alive;
+the browser keeps one Web Worker alive. After opening an archive, subsequent
+operations send only its session ID and entry IDs instead of copying every
+volume through the UI. Codec work remains parallel on supported desktop builds.
 
 The web build processes files entirely in WebAssembly, downloads created `.dz`
 archives directly, and bundles extracted entries into a browser-friendly ZIP
 download. Select the main `.dz` file and its auxiliary volumes together when
-opening a split archive. Run `./scripts/build-web-worker.sh` before a manual
-`dx build --platform web`; `./scripts/serve-web.sh` does this automatically.
+opening a split archive. Run the `wasm-pack build` command above before a manual
+`dx build --platform web`.
 
 ## Workspace
 
@@ -182,12 +224,16 @@ crates/
 ├── dzip/                 Public archive library
 │   └── src/
 │       ├── archive.rs    Indexed reading
+│       ├── archive/      Raw metadata parsing
 │       ├── builder.rs    Deterministic creation
+│       ├── builder/      Original layout planning and volume backends
 │       ├── extract.rs    Safe filesystem extraction
 │       ├── codec/        Unified codec and chunk-flag façade
-│       └── format/       On-disk structures and constants
+│       └── format/       Raw records and resolved physical layout
 ├── dzip-cli/             CLI and DCL compatibility frontend
-├── dzip-gui/             Dioxus desktop and WebAssembly archive manager
+├── dzip-dcl/             Reusable dzip.exe-compatible DCL parser
+├── dzip-workflow/        Shared plans, lazy sessions, typed protocol, and exports
+├── dzip-gui/             Dioxus views plus pure browser/input state modules
 ├── dzip-worker/          Browser Worker runtime for archive operations
 └── codecs/
     ├── bzip/             Standard BZip2 engine
@@ -196,13 +242,13 @@ crates/
     └── dz/               Native DZ/COMBUF engine
 ```
 
-The project uses Rust 2024 and has an MSRV of Rust 1.85.
+The workspace uses the Rust 2024 edition.
 
 ### Releases
 
 This workspace is distributed through GitHub Releases rather than crates.io.
 All member crates inherit the workspace version, and a release tag such as
-`v0.4.2` must match that version before the release workflow builds artifacts.
+`v0.4.3` must match that version before the release workflow builds artifacts.
 
 ## Replacing a `.dz` file in an Android APK
 

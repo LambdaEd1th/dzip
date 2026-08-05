@@ -211,7 +211,14 @@ jobs:
         run: cargo +stable install wasm-pack --version 0.15.0 --locked
 
       - name: Build web worker
-        run: ./scripts/build-web-worker.sh
+        run: |
+          wasm-pack build crates/dzip-worker \
+            --target web \
+            --release \
+            --no-opt \
+            --out-dir ../dzip-gui/assets/worker/pkg \
+            --out-name dzip_gui_worker
+          rm -f crates/dzip-gui/assets/worker/pkg/.gitignore
 
       - name: Build WASM site
         run: |

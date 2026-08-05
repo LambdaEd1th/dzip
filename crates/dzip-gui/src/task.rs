@@ -1,9 +1,11 @@
-use dzip_gui::worker_protocol::{ArchiveTask, ArchiveTaskResponse};
+use dzip_workflow::{ArchiveTask, ArchiveTaskResponse, WorkflowFailure};
 
 #[cfg(feature = "desktop")]
 use futures_timer::Delay;
 #[cfg(feature = "desktop")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
+#[cfg(feature = "desktop")]
+use std::sync::OnceLock;
 #[cfg(feature = "desktop")]
 use std::sync::mpsc;
 #[cfg(feature = "desktop")]
@@ -34,15 +36,62 @@ where
 }
 
 #[cfg(feature = "desktop")]
-pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, String> {
-    Delay::new(Duration::from_millis(1)).await;
-    run_cpu_task(move || dzip_gui::worker_protocol::execute_archive_task(task)).await?
+pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, WorkflowFailure> {
+    let (sender, receiver) = mpsc::channel();
+    archive_worker()
+        .send(ArchiveWorkerMessage { task, sender })
+        .map_err(|_| backend_failure("archive backend is unavailable"))?;
+    loop {
+        match receiver.try_recv() {
+            Ok(result) => return result,
+            Err(mpsc::TryRecvError::Empty) => Delay::new(Duration::from_millis(8)).await,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(backend_failure("archive backend disconnected"));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
+struct ArchiveWorkerMessage {
+    task: ArchiveTask,
+    sender: mpsc::Sender<Result<ArchiveTaskResponse, WorkflowFailure>>,
+}
+
+#[cfg(feature = "desktop")]
+fn archive_worker() -> &'static mpsc::Sender<ArchiveWorkerMessage> {
+    static WORKER: OnceLock<mpsc::Sender<ArchiveWorkerMessage>> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<ArchiveWorkerMessage>();
+        std::thread::Builder::new()
+            .name("dzip-archive-backend".to_string())
+            .spawn(move || {
+                let mut service = dzip_workflow::ArchiveService::default();
+                for message in receiver {
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        dzip_workflow::execute_archive_task(&mut service, message.task)
+                    }))
+                    .unwrap_or_else(|_| Err(backend_failure("archive backend panicked")));
+                    let _ = message.sender.send(result);
+                }
+            })
+            .expect("failed to start archive backend thread");
+        sender
+    })
 }
 
 #[cfg(feature = "web")]
-pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, String> {
+pub async fn run_archive_task(task: ArchiveTask) -> Result<ArchiveTaskResponse, WorkflowFailure> {
     yield_to_browser().await;
     crate::worker_client::run_archive_task(task).await
+}
+
+#[cfg(feature = "desktop")]
+fn backend_failure(message: &str) -> WorkflowFailure {
+    WorkflowFailure {
+        code: dzip_workflow::WorkflowErrorCode::Io,
+        message: message.to_string(),
+    }
 }
 
 #[cfg(feature = "web")]

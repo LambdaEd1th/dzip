@@ -1,9 +1,12 @@
 //! High-level archive reading, indexing, and safe extraction.
 
 use crate::codec::{ChunkEncoding, CodecLimits, Compression, DzDecodeContext};
-use crate::format::{ArchiveSettings, CHUNK_COMBUF, CHUNK_DZ, Chunk, RangeSettings};
-use crate::path::{resolve_relative_path, to_archive_format};
-use crate::reader::{DzipReader, VolumeSource, correct_chunk_sizes};
+use crate::format::{
+    ArchivePath, ArchiveSettings, CHUNK_COMBUF, Chunk, RangeSettings, RawArchive, ResolvedChunk,
+    resolve_chunk_layout, resolve_volume_chunk_layout,
+};
+use crate::path::{ArchivePathKey, resolve_relative_path};
+use crate::reader::{DzipReader, VolumeSource};
 use crate::volume::FileSystemVolumeManager;
 use crate::{DzipError, Result};
 use std::collections::HashMap;
@@ -13,6 +16,58 @@ use std::path::{Path, PathBuf};
 
 pub use crate::options::{ReadLimits, ReadOptions};
 
+mod metadata;
+
+use metadata::{decode_archive_strings, parse_metadata};
+
+impl RawArchive {
+    /// Parse lossless metadata without resolving host paths or opening
+    /// auxiliary volumes.
+    pub fn read_from<R: Read + Seek>(reader: R) -> Result<Self> {
+        Self::read_from_with_options(reader, ReadOptions::default())
+    }
+
+    pub fn read_from_with_options<R: Read + Seek>(reader: R, options: ReadOptions) -> Result<Self> {
+        parse_metadata(&mut DzipReader::new(reader), &options)
+    }
+
+    pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_path_with_options(path, ReadOptions::default())
+    }
+
+    pub fn open_path_with_options(path: impl AsRef<Path>, options: ReadOptions) -> Result<Self> {
+        Self::read_from_with_options(File::open(path)?, options)
+    }
+}
+
+/// A main volume whose metadata has been parsed exactly once and is waiting
+/// for an auxiliary-volume provider.
+pub struct ArchivePreparation<R: Read + Seek> {
+    reader: DzipReader<R>,
+    metadata: RawArchive,
+    options: ReadOptions,
+}
+
+impl<R: Read + Seek> ArchivePreparation<R> {
+    pub fn read(reader: R, options: ReadOptions) -> Result<Self> {
+        let mut reader = DzipReader::new(reader);
+        let metadata = parse_metadata(&mut reader, &options)?;
+        Ok(Self {
+            reader,
+            metadata,
+            options,
+        })
+    }
+
+    pub const fn metadata(&self) -> &RawArchive {
+        &self.metadata
+    }
+
+    pub fn open<V: VolumeSource>(self, volumes: V) -> Result<Archive<R, V>> {
+        finish_open(self.reader, volumes, self.metadata, &self.options)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(pub usize);
 
@@ -20,10 +75,38 @@ pub struct EntryId(pub usize);
 pub struct Entry {
     id: EntryId,
     path: PathBuf,
+    raw_path: ArchivePath,
     chunk_ids: Vec<u16>,
+    segments: Vec<EntrySegment>,
     decompressed_size: u64,
     compression: Compression,
     volume: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrySegment {
+    chunk_id: u16,
+    decoded_range: std::ops::Range<u64>,
+    encoding: ChunkEncoding,
+    volume: u16,
+}
+
+impl EntrySegment {
+    pub const fn chunk_id(&self) -> u16 {
+        self.chunk_id
+    }
+
+    pub const fn decoded_range(&self) -> &std::ops::Range<u64> {
+        &self.decoded_range
+    }
+
+    pub const fn encoding(&self) -> ChunkEncoding {
+        self.encoding
+    }
+
+    pub const fn volume(&self) -> u16 {
+        self.volume
+    }
 }
 
 impl Entry {
@@ -35,8 +118,17 @@ impl Entry {
         &self.path
     }
 
+    /// Exact path bytes reconstructed from the archive string table.
+    pub const fn raw_path(&self) -> &ArchivePath {
+        &self.raw_path
+    }
+
     pub fn chunk_ids(&self) -> &[u16] {
         &self.chunk_ids
+    }
+
+    pub fn segments(&self) -> &[EntrySegment] {
+        &self.segments
     }
 
     pub const fn decompressed_size(&self) -> u64 {
@@ -54,24 +146,48 @@ impl Entry {
 
 #[derive(Debug, Clone)]
 pub struct ArchiveIndex {
-    archive_settings: ArchiveSettings,
+    raw: RawArchive,
     entries: Vec<Entry>,
-    chunks: Vec<Chunk>,
+    /// Compatibility view whose compressed lengths are resolved physical
+    /// lengths. The final chunk of an unopened auxiliary volume retains its
+    /// stored length until that volume is first accessed.
+    resolved_chunks: Vec<ResolvedChunk>,
     volume_files: Vec<String>,
-    range_settings: Option<RangeSettings>,
 }
 
 impl ArchiveIndex {
     pub const fn archive_settings(&self) -> &ArchiveSettings {
-        &self.archive_settings
+        &self.raw.settings
     }
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    pub fn chunks(&self) -> &[Chunk] {
-        &self.chunks
+    pub fn chunks(&self) -> impl ExactSizeIterator<Item = Chunk> + '_ {
+        self.resolved_chunks
+            .iter()
+            .copied()
+            .map(ResolvedChunk::decoder_chunk)
+    }
+
+    pub fn chunk(&self, index: usize) -> Option<Chunk> {
+        self.resolved_chunks
+            .get(index)
+            .copied()
+            .map(ResolvedChunk::decoder_chunk)
+    }
+
+    pub fn stored_chunks(&self) -> &[Chunk] {
+        &self.raw.chunks
+    }
+
+    pub fn resolved_chunks(&self) -> &[ResolvedChunk] {
+        &self.resolved_chunks
+    }
+
+    pub const fn raw_metadata(&self) -> &RawArchive {
+        &self.raw
     }
 
     pub fn volume_files(&self) -> &[String] {
@@ -79,7 +195,16 @@ impl ArchiveIndex {
     }
 
     pub const fn range_settings(&self) -> Option<RangeSettings> {
-        self.range_settings
+        self.raw.range_settings
+    }
+
+    /// Whether the archive contains the standalone dictionary record used by
+    /// the original DZ common-buffer mode.
+    pub fn has_dz_common_buffer(&self) -> bool {
+        self.raw
+            .chunks
+            .iter()
+            .any(|chunk| crate::compat::original::is_dedicated_combuf(chunk.flags))
     }
 
     pub fn entry(&self, id: EntryId) -> Option<&Entry> {
@@ -87,10 +212,17 @@ impl ArchiveIndex {
     }
 
     pub fn find(&self, path: impl AsRef<Path>) -> Option<&Entry> {
-        let needle = to_archive_format(path.as_ref());
+        let needle = ArchivePathKey::from_path(path.as_ref());
         self.entries
             .iter()
-            .find(|entry| to_archive_format(&entry.path).eq_ignore_ascii_case(&needle))
+            .find(|entry| ArchivePathKey::from_path(&entry.path) == needle)
+    }
+
+    pub fn find_raw(&self, path: &[u8]) -> Option<&Entry> {
+        let needle = ArchivePathKey::from_archive_bytes(path);
+        self.entries
+            .iter()
+            .find(|entry| ArchivePathKey::from_archive_bytes(entry.raw_path.as_bytes()) == needle)
     }
 }
 
@@ -99,16 +231,11 @@ pub struct Archive<R: Read + Seek, V: VolumeSource> {
     volumes: V,
     index: ArchiveIndex,
     dz_context: Option<DzDecodeContext>,
+    volume_sizes: HashMap<u16, u64>,
+    volume_chunk_indices: HashMap<u16, Vec<usize>>,
     codec_limits: CodecLimits,
-}
-
-struct ParsedMetadata {
-    settings: ArchiveSettings,
-    strings: Vec<String>,
-    map: Vec<(u16, Vec<u16>)>,
-    chunks: Vec<Chunk>,
-    volume_files: Vec<String>,
-    range_settings: Option<RangeSettings>,
+    input_buffer: Vec<u8>,
+    decode_buffer: Vec<u8>,
 }
 
 impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
@@ -117,9 +244,7 @@ impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
     }
 
     pub fn open_with_options(reader: R, volumes: V, options: ReadOptions) -> Result<Self> {
-        let mut reader = DzipReader::new(reader);
-        let parsed = parse_metadata(&mut reader, &options)?;
-        finish_open(reader, volumes, parsed, &options)
+        ArchivePreparation::read(reader, options)?.open(volumes)
     }
 
     pub fn index(&self) -> &ArchiveIndex {
@@ -130,12 +255,28 @@ impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
         self.index.entries()
     }
 
+    pub fn volume_source_mut(&mut self) -> &mut V {
+        &mut self.volumes
+    }
+
+    pub const fn volume_source(&self) -> &V {
+        &self.volumes
+    }
+
+    pub fn is_volume_resolved(&self, id: u16) -> bool {
+        self.volume_sizes.contains_key(&id)
+    }
+
     pub fn entry(&self, id: EntryId) -> Option<&Entry> {
         self.index.entry(id)
     }
 
     pub fn find_entry(&self, path: impl AsRef<Path>) -> Option<&Entry> {
         self.index.find(path)
+    }
+
+    pub fn find_entry_raw(&self, path: &[u8]) -> Option<&Entry> {
+        self.index.find_raw(path)
     }
 
     pub fn read_entry(&mut self, id: EntryId) -> Result<Vec<u8>> {
@@ -171,21 +312,40 @@ impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
         let chunk_ids = entry.chunk_ids.clone();
         let mut written = 0u64;
         for chunk_id in chunk_ids {
-            let chunk = *self
+            let volume = self
                 .index
+                .raw
                 .chunks
                 .get(chunk_id as usize)
+                .ok_or_else(|| invalid_archive(format!("invalid chunk index {chunk_id}")))?
+                .file;
+            self.resolve_volume_layout(volume)?;
+            let chunk = self
+                .index
+                .resolved_chunks
+                .get(chunk_id as usize)
+                .copied()
+                .map(ResolvedChunk::decoder_chunk)
                 .ok_or_else(|| invalid_archive(format!("invalid chunk index {chunk_id}")))?;
-            let bytes = self.reader.read_chunk_data_with_context_and_limits(
-                &chunk,
-                &mut self.volumes,
-                self.dz_context.as_ref(),
-                self.codec_limits,
-            )?;
+            let encoding = ChunkEncoding::from_flags(chunk.flags)?;
+            if encoding.compression == Compression::Dz {
+                self.ensure_dz_context()?;
+            }
+            let bytes = self
+                .reader
+                .read_chunk_data_with_context_and_limits_reusing(
+                    &chunk,
+                    &mut self.volumes,
+                    self.dz_context.as_ref(),
+                    self.codec_limits,
+                    &mut self.input_buffer,
+                    std::mem::take(&mut self.decode_buffer),
+                )?;
             output.write_all(&bytes)?;
             written = written
                 .checked_add(bytes.len() as u64)
                 .ok_or_else(|| invalid_archive("entry output size overflow"))?;
+            self.decode_buffer = bytes;
         }
         if written != expected {
             return Err(invalid_archive(format!(
@@ -193,6 +353,98 @@ impl<R: Read + Seek, V: VolumeSource> Archive<R, V> {
             )));
         }
         Ok(written)
+    }
+
+    /// Resolve the physical span of every referenced auxiliary-volume chunk.
+    ///
+    /// Normal reading remains lazy. Frontends that display exact packed sizes
+    /// can opt into this pass once while opening an archive.
+    pub fn resolve_all_volumes(&mut self) -> Result<()> {
+        let mut volumes = self
+            .index
+            .raw
+            .chunks
+            .iter()
+            .map(|chunk| chunk.file)
+            .collect::<Vec<_>>();
+        volumes.sort_unstable();
+        volumes.dedup();
+        for volume in volumes {
+            self.resolve_volume_layout(volume)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the physical spans for one available volume without decoding
+    /// any payload. This is useful for frontends that already hold the volume
+    /// bytes and need exact packed-size summaries.
+    pub fn resolve_volume(&mut self, id: u16) -> Result<()> {
+        self.resolve_volume_layout(id)
+    }
+
+    fn resolve_volume_layout(&mut self, id: u16) -> Result<()> {
+        if self.volume_sizes.contains_key(&id) {
+            return Ok(());
+        }
+        let length = self
+            .volumes
+            .volume_len(id)?
+            .ok_or(DzipError::VolumeNotFound(id))?;
+        if let Some(indices) = self.volume_chunk_indices.get(&id) {
+            resolve_volume_chunk_layout(
+                &self.index.raw.chunks,
+                indices,
+                length,
+                &mut self.index.resolved_chunks,
+            );
+            for &index in indices {
+                let decoder_chunk = self.index.resolved_chunks[index].decoder_chunk();
+                validate_chunk_limits(
+                    std::slice::from_ref(&decoder_chunk),
+                    &ReadLimits {
+                        max_chunk_input_size: self.codec_limits.max_input_size,
+                        max_chunk_output_size: self.codec_limits.max_output_size,
+                        ..ReadLimits::unlimited()
+                    },
+                )?;
+            }
+        }
+        self.volume_sizes.insert(id, length);
+        Ok(())
+    }
+
+    fn ensure_dz_context(&mut self) -> Result<()> {
+        if self.dz_context.is_some() {
+            return Ok(());
+        }
+        let settings = self
+            .index
+            .range_settings()
+            .ok_or_else(|| invalid_archive("DZ chunks require archive-wide settings"))?;
+        let common_volumes = self
+            .index
+            .raw
+            .chunks
+            .iter()
+            .filter(|chunk| crate::compat::original::is_dedicated_combuf(chunk.flags))
+            .map(|chunk| chunk.file)
+            .collect::<Vec<_>>();
+        for volume in common_volumes {
+            self.resolve_volume_layout(volume)?;
+        }
+        let decoder_chunks = self.index.chunks().collect::<Vec<_>>();
+        let context = self.reader.load_dz_context_with_limits(
+            &decoder_chunks,
+            settings,
+            &mut self.volumes,
+            self.codec_limits,
+        )?;
+        self.codec_limits.max_workspace_size = self
+            .codec_limits
+            .max_workspace_size
+            .saturating_sub(context.retained_bytes());
+        self.dz_context = Some(context);
+        Ok(())
     }
 }
 
@@ -207,98 +459,61 @@ impl Archive<File, FileSystemVolumeManager> {
         let mut reader = DzipReader::new(file);
         let parsed = parse_metadata(&mut reader, &options)?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let volumes =
-            FileSystemVolumeManager::new(base_dir.to_path_buf(), parsed.volume_files.clone());
+        let volume_files = decode_archive_strings(&parsed.volume_files)?;
+        let volumes = FileSystemVolumeManager::new(base_dir.to_path_buf(), volume_files);
         finish_open(reader, volumes, parsed, &options)
     }
 }
 
-fn parse_metadata<R: Read + Seek>(
-    reader: &mut DzipReader<R>,
-    options: &ReadOptions,
-) -> Result<ParsedMetadata> {
-    let settings = reader.read_archive_settings()?;
-    check_limit(
-        "entry count",
-        options.limits.max_entries as u64,
-        settings.num_user_files as u64,
-    )?;
-    let strings_count = usize::from(settings.num_user_files)
-        .checked_add(usize::from(settings.num_directories))
-        .and_then(|count| count.checked_sub(1))
-        .ok_or_else(|| invalid_archive("invalid metadata string count"))?;
-    let strings = reader.read_strings_with_limits(
-        strings_count,
-        options.limits.max_string_length,
-        options.limits.max_metadata_bytes,
-    )?;
-    let map = reader.read_file_chunk_map_with_limits(
-        settings.num_user_files as usize,
-        options.limits.max_chunks,
-        options.limits.max_chunk_references,
-    )?;
-    let chunk_settings = reader.read_chunk_settings()?;
-    check_limit(
-        "chunk count",
-        options.limits.max_chunks as u64,
-        chunk_settings.num_chunks as u64,
-    )?;
-    if chunk_settings.num_archive_files == 0 {
-        return Err(invalid_archive("archive declares zero volumes"));
-    }
-    let chunks = reader.read_chunks(chunk_settings.num_chunks as usize)?;
-    let volume_files =
-        reader.read_file_list(chunk_settings.num_archive_files.saturating_sub(1) as usize)?;
-    let range_settings = if chunks.iter().any(|chunk| chunk.flags & CHUNK_DZ != 0) {
-        Some(reader.read_global_settings()?.validate()?)
-    } else {
-        None
-    };
-    Ok(ParsedMetadata {
-        settings,
-        strings,
-        map,
-        chunks,
-        volume_files,
-        range_settings,
-    })
-}
-
 fn finish_open<R: Read + Seek, V: VolumeSource>(
     mut reader: DzipReader<R>,
-    mut volumes: V,
-    mut parsed: ParsedMetadata,
+    volumes: V,
+    parsed: RawArchive,
     options: &ReadOptions,
 ) -> Result<Archive<R, V>> {
     let mut sizes = HashMap::new();
     sizes.insert(0, reader.stream_len()?);
-    for id in 1..=parsed.volume_files.len() {
-        let id = u16::try_from(id).map_err(|_| invalid_archive("volume ID overflow"))?;
-        if let Some(length) = volumes.volume_len(id)? {
-            sizes.insert(id, length);
+    for chunk in &parsed.chunks {
+        if !crate::compat::original::semantic_reader_supports_flags(chunk.flags) {
+            return Err(DzipError::UnsupportedCompression(chunk.flags));
         }
     }
+    if let Some(settings) = parsed.range_settings {
+        settings.validate()?;
+    }
 
-    correct_chunk_sizes(&mut parsed.chunks, &sizes);
-    validate_chunk_limits(&parsed.chunks, &options.limits)?;
+    let resolved_chunks = resolve_chunk_layout(&parsed.chunks, &sizes);
+    let decoder_chunks = resolved_chunks
+        .iter()
+        .copied()
+        .map(ResolvedChunk::decoder_chunk)
+        .collect::<Vec<_>>();
+    validate_chunk_limits(&decoder_chunks, &options.limits)?;
 
-    let index = build_index(&parsed, options)?;
-    let dz_context = if let Some(settings) = parsed.range_settings {
-        Some(reader.load_dz_context(&parsed.chunks, settings, &mut volumes)?)
-    } else {
-        None
-    };
+    let volume_files = decode_archive_strings(&parsed.volume_files)?;
+    let mut volume_chunk_indices = HashMap::<u16, Vec<usize>>::new();
+    for (index, chunk) in parsed.chunks.iter().enumerate() {
+        volume_chunk_indices
+            .entry(chunk.file)
+            .or_default()
+            .push(index);
+    }
+    let index = build_index(parsed, resolved_chunks, volume_files, options)?;
 
     Ok(Archive {
         reader,
         volumes,
         index,
-        dz_context,
+        dz_context: None,
+        volume_sizes: sizes,
+        volume_chunk_indices,
         codec_limits: CodecLimits {
             max_input_size: options.limits.max_chunk_input_size,
             max_output_size: options.limits.max_chunk_output_size,
             max_workspace_size: options.limits.max_codec_workspace,
         },
+        input_buffer: Vec::new(),
+        decode_buffer: Vec::new(),
     })
 }
 
@@ -318,59 +533,76 @@ fn validate_chunk_limits(chunks: &[Chunk], limits: &ReadLimits) -> Result<()> {
     Ok(())
 }
 
-fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<ArchiveIndex> {
+fn build_index(
+    parsed: RawArchive,
+    resolved_chunks: Vec<ResolvedChunk>,
+    volume_files: Vec<String>,
+    options: &ReadOptions,
+) -> Result<ArchiveIndex> {
     let file_count = parsed.settings.num_user_files as usize;
-    let mut entries = Vec::with_capacity(parsed.map.len());
+    let mut entries = Vec::with_capacity(parsed.files.len());
     let mut total_output = 0u64;
 
-    for (index, (directory_id, chunk_ids)) in parsed.map.iter().enumerate() {
+    for (index, file) in parsed.files.iter().enumerate() {
+        let directory_id = file.directory_id;
+        let chunk_ids = &file.chunk_ids;
         let file_name = parsed
             .strings
             .get(index)
             .ok_or_else(|| invalid_archive(format!("missing file name at index {index}")))?;
-        let mut archive_path = String::new();
-        if *directory_id > 0 {
+        let mut archive_path = Vec::new();
+        if directory_id > 0 {
             let directory_index = file_count
-                .checked_add(*directory_id as usize - 1)
+                .checked_add(directory_id as usize - 1)
                 .ok_or_else(|| invalid_archive("directory index overflow"))?;
             let directory = parsed.strings.get(directory_index).ok_or_else(|| {
                 invalid_archive(format!(
-                    "invalid directory ID {directory_id} for {file_name}"
+                    "invalid directory ID {directory_id} for {}",
+                    file_name.to_string_lossy()
                 ))
             })?;
-            archive_path.push_str(directory);
-            if !archive_path.ends_with('/') && !archive_path.ends_with('\\') {
-                archive_path.push('\\');
+            archive_path.extend_from_slice(directory.as_bytes());
+            if !archive_path.ends_with(b"/") && !archive_path.ends_with(b"\\") {
+                archive_path.push(b'\\');
             }
         }
-        archive_path.push_str(file_name);
-        let path = resolve_relative_path(&archive_path)?;
+        archive_path.extend_from_slice(file_name.as_bytes());
+        let raw_path = ArchivePath::new(archive_path)?;
+        let path = resolve_relative_path(raw_path.as_str()?)?;
 
         let mut decompressed_size = 0u64;
         let mut compression = Compression::Copy;
         let mut volume = 0;
+        let mut segments = Vec::with_capacity(chunk_ids.len());
         for (part, chunk_id) in chunk_ids.iter().enumerate() {
             let chunk = parsed
                 .chunks
                 .get(*chunk_id as usize)
                 .ok_or_else(|| invalid_archive(format!("invalid chunk index {chunk_id}")))?;
-            if chunk.flags & CHUNK_COMBUF != 0 {
+            let encoding = ChunkEncoding::from_flags(chunk.flags)?;
+            if chunk.flags & CHUNK_COMBUF != 0 && encoding.compression == Compression::Dz {
                 return Err(invalid_archive(format!(
-                    "entry {} references a COMBUF chunk",
+                    "entry {} uses the unsafe DZ | COMBUF combination",
                     path.display()
                 )));
             }
             if chunk.file as usize > parsed.volume_files.len() {
                 return Err(DzipError::VolumeNotFound(chunk.file));
             }
-            let encoding = ChunkEncoding::from_flags(chunk.flags)?;
             if part == 0 {
                 compression = encoding.compression;
                 volume = chunk.file;
             }
+            let start = decompressed_size;
             decompressed_size = decompressed_size
                 .checked_add(chunk.decompressed_length as u64)
                 .ok_or_else(|| invalid_archive("entry size overflow"))?;
+            segments.push(EntrySegment {
+                chunk_id: *chunk_id,
+                decoded_range: start..decompressed_size,
+                encoding,
+                volume: chunk.file,
+            });
         }
         check_limit(
             "entry size",
@@ -384,7 +616,9 @@ fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<Archive
         entries.push(Entry {
             id: EntryId(index),
             path,
+            raw_path,
             chunk_ids: chunk_ids.clone(),
+            segments,
             decompressed_size,
             compression,
             volume,
@@ -397,11 +631,10 @@ fn build_index(parsed: &ParsedMetadata, options: &ReadOptions) -> Result<Archive
     )?;
 
     Ok(ArchiveIndex {
-        archive_settings: parsed.settings,
+        raw: parsed,
         entries,
-        chunks: parsed.chunks.clone(),
-        volume_files: parsed.volume_files.clone(),
-        range_settings: parsed.range_settings,
+        resolved_chunks,
+        volume_files,
     })
 }
 

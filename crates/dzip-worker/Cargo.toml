@@ -12,6 +12,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 console_error_panic_hook = "0.1"
-dzip-gui = { path = "../dzip-gui", default-features = false }
+dzip-workflow = { workspace = true, features = ["protocol"] }
 serde-wasm-bindgen.workspace = true
 wasm-bindgen.workspace = true

@@ -37,6 +37,7 @@ impl Default for DzOptions {
 #[derive(Clone, Debug)]
 pub struct DzDecodeContext {
     pub settings: RangeSettings,
+    retained_bytes: usize,
     #[cfg(feature = "dz")]
     common_buffer: Option<DzCommonBuffer>,
 }
@@ -46,6 +47,11 @@ impl DzDecodeContext {
         settings: RangeSettings,
         chunks: Vec<Vec<u8>>,
     ) -> Result<Self> {
+        let retained_bytes = chunks.iter().try_fold(0usize, |total, chunk| {
+            total
+                .checked_add(chunk.len())
+                .ok_or_else(|| crate::DzipError::InvalidArchive("COMBUF size overflow".to_string()))
+        })?;
         #[cfg(feature = "dz")]
         {
             let common_buffer = if chunks.is_empty() {
@@ -55,13 +61,17 @@ impl DzDecodeContext {
             };
             Ok(Self {
                 settings,
+                retained_bytes,
                 common_buffer,
             })
         }
         #[cfg(not(feature = "dz"))]
         {
             let _ = chunks;
-            Ok(Self { settings })
+            Ok(Self {
+                settings,
+                retained_bytes,
+            })
         }
     }
 
@@ -74,6 +84,10 @@ impl DzDecodeContext {
         {
             false
         }
+    }
+
+    pub const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
     }
 }
 
@@ -89,15 +103,15 @@ pub(crate) fn encode(input: &[u8], settings: RangeSettings) -> Result<Vec<u8>> {
 }
 
 #[cfg(feature = "dz")]
-pub(crate) fn decode(
+pub(crate) fn decode_with_buffer(
     input: &[u8],
     expected_length: usize,
     context: &DzDecodeContext,
     limits: CodecLimits,
+    output: Vec<u8>,
 ) -> Result<Vec<u8>> {
-    dz::decode(
-        input,
-        &dz::DecoderOptions {
+    let mut decoder = dz::Decoder::with_output(
+        dz::DecoderOptions {
             settings: context.settings.into(),
             expected_size: expected_length,
             common_buffer: context.common_buffer.as_ref(),
@@ -107,15 +121,17 @@ pub(crate) fn decode(
                 max_workspace_size: limits.max_workspace_size,
             },
         },
-    )
-    .map_err(Into::into)
+        output,
+    )?;
+    decoder.decode(input)?;
+    Ok(decoder.take_output())
 }
 
 #[cfg(feature = "encode")]
-pub(crate) fn encode_archive(inputs: &[Vec<u8>], options: &DzOptions) -> Result<EncodedDzArchive> {
+pub(crate) fn encode_archive(inputs: &[&[u8]], options: &DzOptions) -> Result<EncodedDzArchive> {
     #[cfg(feature = "dz")]
     {
-        let encoded = dz::compress_archive(inputs, &options.to_engine())?;
+        let encoded = dz::compress_archive_slices(inputs, &options.to_engine())?;
         Ok(EncodedDzArchive {
             chunks: encoded.chunks,
             common_buffer: encoded.common_buffer,

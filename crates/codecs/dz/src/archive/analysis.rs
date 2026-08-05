@@ -78,7 +78,7 @@ impl CommonScanState {
 }
 
 pub(crate) fn find_common_references(
-    inputs: &[Vec<u8>],
+    inputs: &[&[u8]],
     settings: RangeSettings,
     preprocess: bool,
     minimum_match: usize,
@@ -110,7 +110,7 @@ pub(crate) fn find_common_references(
     let mut selections = Vec::<CommonSelection>::new();
     let global_span = inputs
         .iter()
-        .map(Vec::len)
+        .map(|input| input.len())
         .max()
         .unwrap_or(0)
         .saturating_sub(minimum_match);

@@ -1,6 +1,5 @@
 *
 !.gitignore
 !dzip-worker.js
-!dzip-worker-runtime.js
 !pkg/
 !pkg/**

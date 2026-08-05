@@ -47,6 +47,16 @@ pub fn compress_archive(
     inputs: &[Vec<u8>],
     options: &DzEncoderOptions,
 ) -> Result<EncodedDzArchive> {
+    let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    compress_archive_slices(&inputs, options)
+}
+
+/// Compress archive-scoped DZ chunks without requiring the caller to clone
+/// input buffers into a second `Vec<Vec<u8>>`.
+pub fn compress_archive_slices(
+    inputs: &[&[u8]],
+    options: &DzEncoderOptions,
+) -> Result<EncodedDzArchive> {
     let settings = options.settings.validate()?;
     if inputs.len() > 0x8000 {
         return Err(DzipError::InvalidDz(

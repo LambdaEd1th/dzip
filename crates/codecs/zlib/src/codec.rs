@@ -48,16 +48,18 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(options: DecoderOptions) -> Result<Self, Error> {
+        Self::with_output(options, Vec::new())
+    }
+
+    pub fn with_output(options: DecoderOptions, mut output: Vec<u8>) -> Result<Self, Error> {
         if options.expected_size > options.limits.max_output_size {
             return Err(Error::output_limit(
                 "DEFLATE declared output exceeds configured limit",
             ));
         }
         check_workspace(decode_workspace(), options.limits.max_workspace_size)?;
-        Ok(Self {
-            options,
-            output: Vec::new(),
-        })
+        output.clear();
+        Ok(Self { options, output })
     }
 
     pub fn decode<'a>(&'a mut self, input: &[u8]) -> Result<&'a [u8], Error> {

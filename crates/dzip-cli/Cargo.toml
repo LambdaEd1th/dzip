@@ -10,6 +10,8 @@ readme = "../../README.md"
 
 [dependencies]
 dzip = { workspace = true, features = ["parallel"] }
+dzip-dcl.workspace = true
+dzip-workflow = { workspace = true, features = ["dcl", "parallel"] }
 clap = { version = "4.6.4", features = ["derive"] }
 log.workspace = true
 env_logger = "0.11"

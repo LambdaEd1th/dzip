@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/dzip",
+    "crates/dzip-dcl",
+    "crates/dzip-workflow",
     "crates/dzip-cli",
     "crates/dzip-gui",
     "crates/dzip-worker",
@@ -9,10 +11,20 @@ members = [
     "crates/codecs/lzma",
     "crates/codecs/zlib",
 ]
+default-members = [
+    "crates/dzip",
+    "crates/dzip-dcl",
+    "crates/dzip-workflow",
+    "crates/dzip-cli",
+    "crates/codecs/bzip",
+    "crates/codecs/dz",
+    "crates/codecs/lzma",
+    "crates/codecs/zlib",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 repository = "https://github.com/LambdaEd1th/dzip-rs"
 license = "AGPL-3.0-or-later"
@@ -21,11 +33,16 @@ publish = false
 
 [workspace.dependencies]
 bzip = { path = "crates/codecs/bzip" }
+crc32fast = "1.5"
 dzip = { path = "crates/dzip" }
+dzip-dcl = { path = "crates/dzip-dcl" }
+dzip-workflow = { path = "crates/dzip-workflow" }
 dz = { path = "crates/codecs/dz", default-features = false }
 log = "0.4"
 lzma = { path = "crates/codecs/lzma" }
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
 zlib = { path = "crates/codecs/zlib" }

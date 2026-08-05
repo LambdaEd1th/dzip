@@ -57,6 +57,7 @@ pub struct ReadOptions {
 
 #[cfg(feature = "encode")]
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PackOptions {
     pub volume_names: Vec<String>,
     pub alignment: u32,
@@ -77,6 +78,7 @@ impl Default for PackOptions {
 
 #[cfg(feature = "encode")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EntryOptions {
     pub compression: crate::codec::Compression,
     pub volume: u16,

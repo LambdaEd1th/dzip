@@ -18,7 +18,7 @@ mod range;
 mod settings;
 
 pub use archive::common::DzCommonBuffer;
-pub use archive::{DzEncoderOptions, EncodedDzArchive, compress_archive};
+pub use archive::{DzEncoderOptions, EncodedDzArchive, compress_archive, compress_archive_slices};
 pub use chunk::{compress_chunk, decompress_chunk, decompress_chunk_with_common_buffer};
 pub use codec::{Decoder, Encoder, decode, encode};
 pub use error::{DzError, ErrorKind, Result};

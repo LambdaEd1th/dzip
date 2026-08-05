@@ -114,6 +114,15 @@ pub fn decode(
     input: &[u8],
     context: DecodeContext<'_>,
 ) -> Result<Vec<u8>> {
+    decode_with_buffer(encoding, input, context, Vec::new())
+}
+
+pub(crate) fn decode_with_buffer(
+    encoding: ChunkEncoding,
+    input: &[u8],
+    context: DecodeContext<'_>,
+    mut output: Vec<u8>,
+) -> Result<Vec<u8>> {
     if input.len() > context.limits.max_input_size {
         return Err(crate::DzipError::LimitExceeded {
             resource: "codec input size",
@@ -129,15 +138,29 @@ pub fn decode(
         });
     }
     match encoding.compression {
-        Compression::Copy => Ok(input.to_vec()),
-        Compression::Zero => Ok(vec![0; context.expected_len]),
+        Compression::Copy => {
+            output.clear();
+            output.extend_from_slice(input);
+            Ok(output)
+        }
+        Compression::Zero => {
+            output.clear();
+            output.resize(context.expected_len, 0);
+            Ok(output)
+        }
         Compression::Dz => {
             #[cfg(feature = "dz")]
             {
                 let dz_context = context
                     .dz
                     .ok_or(CodecError::MissingContext { codec: Codec::Dz })?;
-                dz::decode(input, context.expected_len, dz_context, context.limits)
+                dz::decode_with_buffer(
+                    input,
+                    context.expected_len,
+                    dz_context,
+                    context.limits,
+                    output,
+                )
             }
             #[cfg(not(feature = "dz"))]
             {
@@ -147,7 +170,7 @@ pub fn decode(
         Compression::Bzip => {
             #[cfg(feature = "bzip")]
             {
-                bzip::decode(input, context.expected_len, context.limits)
+                bzip::decode_with_buffer(input, context.expected_len, context.limits, output)
             }
             #[cfg(not(feature = "bzip"))]
             {
@@ -157,7 +180,7 @@ pub fn decode(
         Compression::Zlib => {
             #[cfg(feature = "zlib")]
             {
-                zlib::decode(input, context.expected_len, context.limits)
+                zlib::decode_with_buffer(input, context.expected_len, context.limits, output)
             }
             #[cfg(not(feature = "zlib"))]
             {
@@ -167,7 +190,7 @@ pub fn decode(
         Compression::Lzma => {
             #[cfg(feature = "lzma")]
             {
-                lzma::decode(input, context.expected_len, context.limits)
+                lzma::decode_with_buffer(input, context.expected_len, context.limits, output)
             }
             #[cfg(not(feature = "lzma"))]
             {

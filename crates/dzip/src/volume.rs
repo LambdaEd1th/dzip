@@ -3,7 +3,7 @@ use crate::reader::{ReadSeek, VolumeSource};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A volume manager that reads volumes from the filesystem using a base directory and a file list.
 pub struct FileSystemVolumeManager {
@@ -46,6 +46,20 @@ impl MemoryVolumeSource {
                 .map(|(id, bytes)| (id, std::io::Cursor::new(bytes)))
                 .collect(),
         }
+    }
+
+    pub fn insert(&mut self, id: u16, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        self.volumes
+            .insert(id, std::io::Cursor::new(bytes))
+            .map(std::io::Cursor::into_inner)
+    }
+
+    pub fn contains(&self, id: u16) -> bool {
+        self.volumes.contains_key(&id)
+    }
+
+    pub fn available_ids(&self) -> impl Iterator<Item = u16> + '_ {
+        self.volumes.keys().copied()
     }
 }
 
@@ -90,11 +104,84 @@ impl VolumeSource for FileSystemVolumeManager {
                 let relative = crate::path::resolve_relative_path(file_name).map_err(|error| {
                     DzipError::VolumeOpenError(id, format!("unsafe volume path: {error}"))
                 })?;
-                let path = self.base_dir.join(relative);
-                let file =
-                    File::open(&path).map_err(|e| DzipError::VolumeOpenError(id, e.to_string()))?;
+                let file = open_windows_compatible(&self.base_dir, &relative)
+                    .map_err(|e| DzipError::VolumeOpenError(id, e.to_string()))?;
                 Ok(e.insert(file))
             }
         }
+    }
+}
+
+fn open_windows_compatible(base: &Path, relative: &Path) -> std::io::Result<File> {
+    let exact = base.join(relative);
+    match File::open(&exact) {
+        Ok(file) => return Ok(file),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound || cfg!(windows) => {
+            return Err(error);
+        }
+        Err(_) => {}
+    }
+
+    let mut current = base.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(expected) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "auxiliary volume path is not relative",
+            ));
+        };
+        let expected = expected.to_string_lossy();
+        let mut matches = std::fs::read_dir(&current)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected)
+            })
+            .map(|entry| entry.path());
+        let Some(matching) = matches.next() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "{} was not found",
+                    current.join(expected.as_ref()).display()
+                ),
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "ambiguous case-insensitive volume component {}",
+                    current.join(expected.as_ref()).display()
+                ),
+            ));
+        }
+        current = matching;
+    }
+    File::open(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filesystem_volumes_use_windows_case_comparison_on_every_host() {
+        let root = std::env::temp_dir().join(format!("dzip-volume-case-{}", std::process::id()));
+        let nested = root.join("assets");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("game.001"), b"volume").unwrap();
+        let mut source =
+            FileSystemVolumeManager::new(root.clone(), vec!["ASSETS/GAME.001".to_string()]);
+        let mut bytes = Vec::new();
+        source
+            .open_volume(1)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"volume");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
