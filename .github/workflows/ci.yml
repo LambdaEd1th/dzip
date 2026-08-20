@@ -14,50 +14,14 @@ env:
   DX_VERSION: 0.7.10
 
 jobs:
-  codec-platforms:
-    name: Codecs (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x86_64
-            os: ubuntu-24.04
-          - name: Linux aarch64
-            os: ubuntu-24.04-arm
-          - name: macOS aarch64
-            os: macos-15
-          - name: Windows x86_64
-            os: windows-2025-vs2026
-          - name: Windows aarch64
-            os: windows-11-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: Test codecs and original dzip fixtures
-        run: |
-          cargo +stable test -p bzip -p dz -p lzma -p zlib
-          cargo +stable test -p dzip --test codec_compatibility
-          cargo +stable test -p dzip-cli --test dz_cli_roundtrip native_fixtures_repack_extract_and_match_dz_bytes
-
-      - name: Clippy codecs and integration layer
-        run: cargo +stable clippy -p bzip -p dz -p lzma -p zlib -p dzip -p dzip-workflow -p dzip-cli --all-targets --all-features --no-deps -- -D warnings
-
   rust:
-    name: Rust
+    name: Applications
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install Linux desktop dependencies
         run: |
@@ -85,58 +49,46 @@ jobs:
       - name: Check native workspace
         run: cargo +stable check --workspace --all-targets
 
-      - name: Check Web GUI
+      - name: Check Web GUI and worker
         run: |
           cargo +stable check -p dzip-gui --no-default-features --features web --target wasm32-unknown-unknown
           cargo +stable check -p dzip-gui-worker --target wasm32-unknown-unknown
 
-      - name: Check WASM libraries and CLI
+      - name: Check portable application layers
         run: |
-          cargo +stable check -p dzip -p dzip-cli -p dz -p lzma -p zlib \
+          cargo +stable check -p dzip-cli -p dzip-dcl -p dzip-workflow \
             --all-targets --all-features --target wasm32-unknown-unknown
-          cargo +stable check -p bzip --target wasm32-unknown-unknown
 
       - name: Test native workspace
         run: cargo +stable test --workspace --all-targets
 
-      - name: Check library feature boundaries
+      - name: Test dzip.exe compatibility through the CLI
+        run: cargo +stable test -p dzip-cli --test dz_cli_roundtrip native_fixtures_repack_extract_and_match_dz_bytes
+
+      - name: Check workflow feature boundaries
         run: |
-          cargo +stable check -p dzip --no-default-features
-          cargo +stable check -p dzip --no-default-features --features decode
-          cargo +stable check -p dzip --no-default-features --features encode
-          cargo +stable check -p dzip --all-features
-          cargo +stable check -p dz --no-default-features
           cargo +stable check -p dzip-workflow --no-default-features
           cargo +stable check -p dzip-workflow --no-default-features --features dcl
           cargo +stable check -p dzip-workflow --no-default-features --features protocol
           cargo +stable check -p dzip-workflow --all-features
-          cargo +stable test -p dzip --no-default-features --features encode --lib
           cargo +stable test -p dzip-workflow --all-features
-          cargo +stable test -p dzip --all-features --doc
 
       - name: Clippy native workspace
         run: cargo +stable clippy --workspace --all-targets --no-deps -- -D warnings
 
-      - name: Clippy Web GUI
+      - name: Clippy Web GUI and worker
         run: |
           cargo +stable clippy -p dzip-gui --no-default-features --features web --target wasm32-unknown-unknown --no-deps -- -D warnings
           cargo +stable clippy -p dzip-gui-worker --target wasm32-unknown-unknown --no-deps -- -D warnings
 
-      - name: Clippy WASM libraries and CLI
+      - name: Clippy portable application layers
         run: |
-          cargo +stable clippy -p dzip -p dzip-cli -p dz -p lzma -p zlib \
+          cargo +stable clippy -p dzip-cli -p dzip-dcl -p dzip-workflow \
             --all-targets --all-features --target wasm32-unknown-unknown \
             --no-deps -- -D warnings
-          cargo +stable clippy -p bzip --target wasm32-unknown-unknown \
-            --no-deps -- -D warnings
 
-      - name: Clippy feature boundaries
+      - name: Clippy workflow feature boundaries
         run: |
-          cargo +stable clippy -p dzip --no-default-features --no-deps -- -D warnings
-          cargo +stable clippy -p dzip --no-default-features --features decode --no-deps -- -D warnings
-          cargo +stable clippy -p dzip --no-default-features --features encode --no-deps -- -D warnings
-          cargo +stable clippy -p dz --no-default-features --no-deps -- -D warnings
-          cargo +stable clippy -p zlib --no-default-features --no-deps -- -D warnings
           cargo +stable clippy -p dzip-workflow --no-default-features --no-deps -- -D warnings
           cargo +stable clippy -p dzip-workflow --all-features --all-targets --no-deps -- -D warnings
 
@@ -146,6 +98,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

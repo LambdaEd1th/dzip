@@ -8,5 +8,5 @@ publish.workspace = true
 description = "dzip.exe-compatible DCL configuration parser"
 
 [dependencies]
-dzip = { path = "../dzip", default-features = false }
+dzip = { path = "../../vendor/dzip", default-features = false }
 log.workspace = true

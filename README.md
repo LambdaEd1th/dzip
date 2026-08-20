@@ -2,30 +2,31 @@
 
 [![Rust CI](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml)
 
-Pure-Rust support for reading, extracting, creating, and inspecting Dzip
-archives. The workspace contains the reusable `dzip` library, shared DCL and
+Command-line and graphical applications for reading, extracting, creating, and
+inspecting Dzip archives. This workspace contains the shared DCL and
 application-workflow layers, the `dzip-cli` command-line application, and a
-Dioxus desktop/Web archive manager.
+Dioxus desktop/Web archive manager. The reusable library is maintained in
+[dzip-core](https://github.com/LambdaEd1th/dzip-core) and pinned here as a Git
+submodule.
 
 The implementation is compatible with `dzip.exe`, including split volumes,
 native DZ compression and COMBUF references, BZip2, LZMA1, and the original
 program's unusual truncated-gzip/DEFLATE framing. All four codec engines are
-safe `no_std + alloc` Rust implementations with no C, FFI, or external
-compression library. Standard-codec output need not match the original encoder
-byte for byte; native DZ and COMBUF output is tested for byte identity.
+integrated into the `dzip` crate with no C, FFI, or external compression
+library. Standard-codec output need not match the original encoder byte for
+byte; native DZ and COMBUF output is tested for byte identity.
 
-The four codec crates share one public architecture: typed options and errors,
-one-shot and allocation-reusing APIs, and configurable input, output, and
-workspace limits. `ReadOptions::limits` propagates those ceilings into archive
-decoding, while Dzip-specific framing stays in the `dzip` façade.
+The integrated codecs share typed options and errors, allocation-reusing
+internals, and configurable input, output, and workspace limits.
+`ReadOptions::limits` propagates those ceilings into archive decoding.
 
-## Library
+## Core library
 
 Add the public crate directly from GitHub (it is not published on crates.io):
 
 ```toml
 [dependencies]
-dzip = { git = "https://github.com/LambdaEd1th/dzip-rs.git", tag = "v0.4.3" }
+dzip = { git = "https://github.com/LambdaEd1th/dzip-core.git", tag = "v0.5.1" }
 ```
 
 Open, inspect, and extract an archive:
@@ -142,9 +143,16 @@ engine is disabled returns `CodecError::Unavailable`.
 Build from source:
 
 ```bash
-git clone https://github.com/LambdaEd1th/dzip-rs.git
+git clone --recurse-submodules https://github.com/LambdaEd1th/dzip-rs.git
 cd dzip-rs
 cargo build --release -p dzip-cli
+```
+
+If the repository was cloned without submodules, initialize the core library
+before building:
+
+```bash
+git submodule update --init --recursive
 ```
 
 The executable is written to `target/release/dzip-cli`.
@@ -219,34 +227,26 @@ opening a split archive. Run the `wasm-pack build` command above before a manual
 
 ```text
 crates/
-├── dzip/                 Public archive library
-│   └── src/
-│       ├── archive.rs    Indexed reading
-│       ├── archive/      Raw metadata parsing
-│       ├── builder.rs    Deterministic creation
-│       ├── builder/      Original layout planning and volume backends
-│       ├── extract.rs    Safe filesystem extraction
-│       ├── codec/        Unified codec and chunk-flag façade
-│       └── format/       Raw records and resolved physical layout
 ├── dzip-cli/             CLI and DCL compatibility frontend
 ├── dzip-dcl/             Reusable dzip.exe-compatible DCL parser
 ├── dzip-workflow/        Shared plans, lazy sessions, typed protocol, and exports
 ├── dzip-gui/             Dioxus views plus pure browser/input state modules
-├── dzip-worker/          Browser Worker runtime for archive operations
-└── codecs/
-    ├── bzip/             Standard BZip2 engine
-    ├── lzma/             LZMA1 engine
-    ├── zlib/             RFC 1950/1951 zlib and DEFLATE engine
-    └── dz/               Native DZ/COMBUF engine
+└── dzip-worker/          Browser Worker runtime for archive operations
+vendor/
+└── dzip/                 Pinned dzip-core submodule with integrated codecs
 ```
 
-The workspace uses the Rust 2024 edition.
+The workspace and the core library use the Rust 2024 edition. Core API,
+codec, fixture, and compatibility-test changes belong in the dzip-core
+repository; update this repository's submodule pointer only after those changes
+have passed its CI.
 
 ### Releases
 
-This workspace is distributed through GitHub Releases rather than crates.io.
-All member crates inherit the workspace version, and a release tag such as
-`v0.4.3` must match that version before the release workflow builds artifacts.
+This application workspace is distributed through GitHub Releases rather than
+crates.io. Application crates inherit the workspace version, and a release tag
+such as `v0.4.3` must match `dzip-cli` before the release workflow builds
+artifacts. The core library has its own version and release tags.
 
 ## Replacing a `.dz` file in an Android APK
 
@@ -316,6 +316,7 @@ and test the finished APK on a clean installation before distribution.
 
 ## License
 
-This repository, including the codec implementations, is distributed under
-AGPL-3.0-or-later. The fixed BZip2 legacy-randomization table retains its
-upstream permissive notice in `crates/codecs/bzip/LICENSE`.
+This repository is distributed under AGPL-3.0-or-later. The dzip-core
+submodule is licensed separately under the same license; the fixed BZip2
+legacy-randomization table retains its upstream notice in
+`vendor/dzip/LICENSES/BZIP2.txt`.

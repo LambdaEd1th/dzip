@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn native_fixtures_repack_extract_and_match_dz_bytes() {
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/native");
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/dzip/test_data/native");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
