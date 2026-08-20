@@ -1,12 +1,12 @@
-# dzip-rs
+# dzip-tools
 
-[![Rust CI](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/LambdaEd1th/dzip-rs/actions/workflows/ci.yml)
+[![Rust CI](https://github.com/LambdaEd1th/dzip-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/LambdaEd1th/dzip-tools/actions/workflows/ci.yml)
 
 Command-line and graphical applications for reading, extracting, creating, and
 inspecting Dzip archives. This workspace contains the shared DCL and
 application-workflow layers, the `dzip-cli` command-line application, and a
 Dioxus desktop/Web archive manager. The reusable library is maintained in
-[dzip-core](https://github.com/LambdaEd1th/dzip-core) and pinned here as a Git
+[dzip-archive](https://github.com/LambdaEd1th/dzip-archive) and pinned here as a Git
 submodule.
 
 The implementation is compatible with `dzip.exe`, including split volumes,
@@ -26,7 +26,7 @@ Add the public crate directly from GitHub (it is not published on crates.io):
 
 ```toml
 [dependencies]
-dzip = { git = "https://github.com/LambdaEd1th/dzip-core.git", tag = "v0.5.1" }
+dzip = { git = "https://github.com/LambdaEd1th/dzip-archive.git", tag = "v0.5.1" }
 ```
 
 Open, inspect, and extract an archive:
@@ -143,8 +143,8 @@ engine is disabled returns `CodecError::Unavailable`.
 Build from source:
 
 ```bash
-git clone --recurse-submodules https://github.com/LambdaEd1th/dzip-rs.git
-cd dzip-rs
+git clone --recurse-submodules https://github.com/LambdaEd1th/dzip-tools.git
+cd dzip-tools
 cargo build --release -p dzip-cli
 ```
 
@@ -233,11 +233,11 @@ crates/
 ├── dzip-gui/             Dioxus views plus pure browser/input state modules
 └── dzip-worker/          Browser Worker runtime for archive operations
 vendor/
-└── dzip/                 Pinned dzip-core submodule with integrated codecs
+└── dzip/                 Pinned dzip-archive submodule with integrated codecs
 ```
 
 The workspace and the core library use the Rust 2024 edition. Core API,
-codec, fixture, and compatibility-test changes belong in the dzip-core
+codec, fixture, and compatibility-test changes belong in the dzip-archive
 repository; update this repository's submodule pointer only after those changes
 have passed its CI.
 
@@ -316,7 +316,7 @@ and test the finished APK on a clean installation before distribution.
 
 ## License
 
-This repository is distributed under AGPL-3.0-or-later. The dzip-core
+This repository is distributed under AGPL-3.0-or-later. The dzip-archive
 submodule is licensed separately under the same license; the fixed BZip2
 legacy-randomization table retains its upstream notice in
 `vendor/dzip/LICENSES/BZIP2.txt`.
