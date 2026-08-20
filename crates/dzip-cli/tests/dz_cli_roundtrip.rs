@@ -11,13 +11,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn native_fixtures_repack_extract_and_match_dz_bytes() {
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_data/native");
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/dzip/test_data/native");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "dzip-rs-cli-roundtrip-{}-{}",
+        "dzip-tools-cli-roundtrip-{}-{}",
         std::process::id(),
         unique
     ));
@@ -141,7 +142,7 @@ fn lzma_chunk_table_matches_dzip_original() {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "dzip-rs-lzma-compat-{}-{}",
+        "dzip-tools-lzma-compat-{}-{}",
         std::process::id(),
         unique
     ));
@@ -211,7 +212,7 @@ fn framed_codec_chunk_lengths_match_dzip_original() {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "dzip-rs-framed-codecs-{}-{}",
+        "dzip-tools-framed-codecs-{}-{}",
         std::process::id(),
         unique
     ));
@@ -509,7 +510,11 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("dzip-rs-{label}-{}-{}", std::process::id(), unique))
+    std::env::temp_dir().join(format!(
+        "dzip-tools-{label}-{}-{}",
+        std::process::id(),
+        unique
+    ))
 }
 
 fn assert_same(expected: &Path, actual: &Path) {

@@ -773,7 +773,7 @@ fn SettingsModal(
                         }
                         a {
                             class: "settings-github-link",
-                            href: "https://github.com/LambdaEd1th/dzip-rs",
+                            href: "https://github.com/LambdaEd1th/dzip-tools",
                             target: "_blank",
                             rel: "noopener noreferrer",
                             Icon { name: IconName::Github, size: 17 }

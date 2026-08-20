@@ -132,7 +132,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "dzip-rs-dcl-{label}-{}-{unique}",
+        "dzip-tools-dcl-{label}-{}-{unique}",
         std::process::id()
     ))
 }

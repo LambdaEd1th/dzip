@@ -1,0 +1,3 @@
+[submodule "vendor/dzip"]
+	path = vendor/dzip
+	url = https://github.com/LambdaEd1th/dzip-archive.git
